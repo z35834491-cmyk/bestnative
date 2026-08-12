@@ -1,478 +1,319 @@
-# BestNative — AI-Native 全栈运维指挥中心
+# BestNative — AI-Native 智能运维平台
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi" alt="FastAPI">
-  <img src="https://img.shields.io/badge/Next.js-14-black?logo=next.js" alt="Next.js">
-  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/pgvector-HNSW-4169E1" alt="pgvector">
-  <img src="https://img.shields.io/badge/LLM-DeepSeek_v4--pro-blue" alt="DeepSeek">
+  <img src="https://img.shields.io/badge/status-active-success" alt="Status">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
-> **下一代 AI 运维范式** — 10 个专业领域 Agent 协同工作，覆盖监控、诊断、修复、安全、成本、发布全生命周期。基于 LangGraph ReAct 执行器，分 4 层按需加载 22 个工具，token 消耗降低 60%+；混合检索 + 本地 rerank 实现毫秒级故障匹配，飞轮效应让第 N 次同类事件响应从 30 分钟压缩到 30 秒。
+> 将 AI Agent 体系深度融合进运维全生命周期 — 从被动响应到主动预防，从人工排查到智能诊断，从经验驱动到数据驱动。
 
 ---
 
 ## 目录
 
-- [架构总览](#架构总览)
-- [核心技术栈](#核心技术栈)
-- [10 Agent 体系](#10-agent-体系)
-- [关键子系统](#关键子系统)
-  - [分层工具注册表 (Tiered Tool Registry)](#分层工具注册表-tiered-tool-registry)
-  - [ReAct 执行器 & Token 控制](#react-执行器--token-控制)
-  - [Discovery Engine 自动发现](#discovery-engine-自动发现)
-  - [Trace 链路拓扑](#trace-链路拓扑)
-  - [混合检索 RAG](#混合检索-rag)
-  - [多环境 Provider 抽象](#多环境-provider-抽象)
-  - [安全扫描引擎](#安全扫描引擎)
-  - [发布管理 & 自动回滚](#发布管理--自动回滚)
-- [数据模型](#数据模型)
+- [平台理念](#平台理念)
+- [核心能力](#核心能力)
+- [AI Agent 体系](#ai-agent-体系)
+- [知识引擎 (RAG)](#知识引擎-rag)
+- [可观测性](#可观测性)
+- [自动化运维](#自动化运维)
+- [多环境管理](#多环境管理)
+- [安全合规](#安全合规)
 - [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [环境变量](#环境变量)
-- [设计原则](#设计原则)
-- [路线图](#路线图)
+- [架构](#架构)
 
 ---
 
-## 架构总览
+## 平台理念
+
+传统运维的瓶颈不在工具不够多，而在**决策链路太长**：告警响了 → 人看 → 人查日志 → 人查指标 → 人翻历史 → 人判断 → 人执行。每一步都是分钟级的上下文切换。
+
+BestNative 的核心思路是把这条链路上的每一步都交给对应的 AI Agent，人只做最终确认。
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Next.js 14 前端                        │
-│  shadcn/ui · Server Components · 同源 /api/* 代理        │
-├──────────────────────────────────────────────────────────┤
-│                     FastAPI 网关                          │
-│    /api/health · /topology · /incidents · /security       │
-│    /deployments · /knowledge · /schedules · /cost         │
-├──────────┬──────────┬──────────┬──────────┬─────────────┤
-│ 监控Agent │ 诊断Agent │ 安全Agent │ 变更Agent │ 知识Agent  │
-│ 7×24巡检  │ ReAct排查 │ 漏洞扫描  │ 风险评估  │ RAG检索    │
-├──────────┼──────────┼──────────┼──────────┼─────────────┤
-│ 修复Agent │ 成本Agent │ 助手Agent │ 调度Agent │ 架构Agent  │
-│ 自动fix   │ 降本分析  │ NL交互    │ 多Agent协 │ 容量预测   │
-├──────────┴──────────┴──────────┴──────────┴─────────────┤
-│              LangGraph ReAct 执行器                       │
-│    分4层按需加载22个工具 · 3轮后自动摘要 · token最优      │
-├──────────────────────────────────────────────────────────┤
-│  PostgreSQL/pgvector  │  Redis  │  ES(trace_log)         │
-│  HNSW索引 · BM25全文  │  缓存   │  Prometheus(只读)      │
-└──────────────────────────────────────────────────────────┘
+传统模式: 告警 → 👤查 → 👤判断 → 👤执行
+BestNative: 告警 → 🤖监控Agent → 🤖诊断Agent → 🤖修复建议 → 👤确认 → 🤖执行Agent
 ```
 
-## 核心技术栈
+三个关键转变：
 
-| 层级 | 选型 | 先进性 |
-|------|------|--------|
-| **后端框架** | FastAPI 0.115 (Python 3.11+) | 异步高性能，原生 OpenAPI 3.1，Pydantic v2 类型安全 |
-| **AI 编排** | LangGraph + ReAct | 状态图驱动的多步推理，支持条件分支、工具调用循环 |
-| **LLM** | DeepSeek v4-pro | MoE 架构，1M token 上下文，中文 SOTA |
-| **Embedding** | BAAI/bge-small-zh-v1.5 | 本地推理，512 维，C-MTEB 榜首，零 API 费用 |
-| **Reranker** | BAAI/bge-reranker-v2-m3 | 多语言 Cross-Encoder，本地精排，Top-3 召回率 95%+ |
-| **向量数据库** | pgvector (HNSW) | PostgreSQL 原生扩展，IVFFlat/HNSW 双索引，无额外运维 |
-| **全文检索** | PostgreSQL `tsvector` + `ts_rank` | 内置 BM25 变体，与向量混合检索 |
-| **前端** | Next.js 14 App Router | React Server Components，Streaming SSR，Edge Middleware |
-| **UI** | shadcn/ui + Tailwind CSS | Radix 无样式原语，Tree-shaking 零运行时 |
-| **数据库** | PostgreSQL 16 + pgvector | 统一存储：业务数据 + 向量 + 全文，一个实例全搞定 |
-| **缓存/队列** | Redis 7 | 缓存 + Pub/Sub 消息总线，替代 Kafka/Celery |
-| **日志源** | Elasticsearch (trace_log) | 复用现有集群，httpx 直连 REST API，自动 HTTPS 回退 |
-| **指标** | Prometheus (只读) | 复用现有，不加采集管道 |
-| **容器化** | Docker Compose | 单文件全栈编排，一键 `up -d --build` |
-| **K8s 集成** | kubernetes-asyncio | 三路 context 分支 (in_cluster / with_context / default) |
-
-## 10 Agent 体系
-
-每个 Agent 独立可插拔，通过抽象基类 `BaseAgent` 声明配置，由 ReAct 执行器统一调度。
-
-| # | Agent | 触发条件 | 工具层级 | 人工确认 | 核心能力 |
-|---|-------|----------|----------|----------|----------|
-| 1 | **智能监控** | Cron / 阈值触发 | T0 常驻 | 否 | 7×24 多维度巡检，异常模式识别，PromQL 动态生成，告警聚合去重 |
-| 2 | **诊断分析** | 告警升级 / 手动 | T0→T2 | 否 | ReAct 多步排查：日志→指标→链路→事件关联，根因定位，影响面评估 |
-| 3 | **自动修复** | 诊断结论 | T3 执行 | **是** | 已知问题自动 apply runbook，回滚操作，全操作审计日志 |
-| 4 | **架构优化** | 周报触发 | T1→T2 | 否 | 资源瓶颈识别，容量预测 (Prophet)，技术债务量化，高可用风险评分 |
-| 5 | **成本管控** | 日报触发 | T1 | 否 | AWS Cost Explorer / K8s 资源分析，闲置资源识别，RI/Spot 建议，ROI 建模 |
-| 6 | **变更管理** | GitLab Webhook | T0→T3 | **是** | 发布前 diff 风险评估，灰度/金丝雀策略，部署后自动验证，失败自动回滚 |
-| 7 | **安全合规** | Cron 03:00 + 手动 | T3 执行 | 否 | Nuclei 漏洞扫描，Subfinder 子域名发现，CIS 基线检查，合规报告生成 |
-| 8 | **知识管理** | Incident 解决后 | T0 | 否 | 故障自动归档→向量化→关联，复盘报告生成，Runbook 提取，历史案例 Top-3 匹配 |
-| 9 | **智能助手** | 用户 @提及 | T0 | 否 | 自然语言交互，上下文理解，日报/周报自动生成，预测性主动提醒 |
-| 10 | **协作调度** | 多 Agent 并发 | T0 | 否 | 任务优先级排序，Agent 间上下文传递，值班轮转，跨渠道通知 (Slack/飞书/钉钉) |
+1. **从被动到主动** — 不等告警才响应，Agent 7×24 自驱巡检，异常在影响用户前已被发现
+2. **从孤岛到协同** — 日志、指标、链路、事件、知识库不再是独立系统，Agent 在统一的上下文中跨源推理
+3. **从遗忘到积累** — 每次故障的处理过程自动沉淀为知识，下次同类事件秒级匹配，组织经验不随人员流动而丢失
 
 ---
 
-## 关键子系统
+## 核心能力
 
-### 分层工具注册表 (Tiered Tool Registry)
+| 领域 | 能力 | 说明 |
+|------|------|------|
+| **全局总览** | 实时资源拓扑 + 健康染色 | 多集群服务/节点/中间件统一视图，异常一眼定位 |
+| **智能告警** | 聚合 → 去重 → 丰富化 → 路由 | 告警风暴变结构化事件，自动关联影响面 |
+| **根因诊断** | 多源交叉推理 | Agent 自主查询日志/指标/链路/变更记录，给出根因假设和置信度 |
+| **自动修复** | 已知故障模式 Runbook 执行 | 匹配历史案例，自动执行修复动作（需人工确认），全链路审计 |
+| **服务拓扑** | 基于真实链路的调用图 | 从分布式日志中还原服务间调用关系，自动识别中间件依赖 |
+| **知识管理** | 故障归档 + 智能检索 | 每次事件自动沉淀，向量检索 + 全文检索双路召回 |
+| **变更管理** | 发布风险评估 + 自动验证 | 分析变更 diff 与历史故障的关联，部署后自动健康检查 |
+| **成本优化** | 资源画像 + 闲置识别 | 跨环境成本聚合，自动发现可降配/可释放资源 |
+| **安全扫描** | 定时全平台漏洞检测 | 资产自动发现 + 漏洞模板匹配，合规报告自动生成 |
 
-22 个工具按 4 层分阶段加载到 LLM context，避免一次性注入全部 schema 导致 token 爆炸：
+---
 
-```
-T0_ALWAYS   (常驻)   → 可观测性：查日志、查指标、查 Pod、查拓扑
-T1_PLAN     (规划)   → 变更/历史：查部署、查事件、查知识库
-T2_ANALYZE  (分析)   → 深度检测：trace 追踪、依赖分析、性能剖析
-T3_ACTION   (执行)   → 输出层：漏洞扫描、重启 Pod、回滚部署、生成规则
-```
+## AI Agent 体系
 
-```python
-@register_tool("query_logs", tier=ToolTier.T0_ALWAYS, description="查询 ES 日志")
-async def query_logs(service: str, hours: int = 1, keyword: str = "") -> dict: ...
+### 设计理念
 
-@register_tool("nuclei_scan", tier=ToolTier.T3_ACTION, description="漏洞扫描")
-async def nuclei_scan(target: str, templates: list[str] = []) -> dict: ...
-```
+不是一个大模型包揽一切，而是**多个专业 Agent 各司其职**，类似运维团队的分工：有人盯监控，有人排查故障，有人执行变更，有人做复盘。
 
-**收益**：单次 ReAct 循环的 system prompt token 从 ~8000 降至 ~2500（降低 68%），同时保持完整功能。
+每个 Agent 拥有受限的工具集和领域知识。Agent 之间通过统一的上下文总线传递信息——诊断 Agent 的结论直接喂给修复 Agent，不需要人工中转。
 
-### ReAct 执行器 & Token 控制
+### Agent 分工
 
-```python
-async def run_react(system_prompt, user_task, max_tier, max_iterations=8) -> dict:
-    """ReAct 循环：LLM 决策 → 调用工具 → 观察 → 再决策
-    
-    关键优化：
-    - 分阶段累加加载工具（T0 → T0+T1 → T0+T1+T2 → 全量）
-    - 3 轮后自动摘要早期历史消息，保留 system + 最近 4 条
-    - 工具返回压缩到 2000 字符，避免巨型 ToolMessage
-    - 每轮统计 token 消耗，超限自动降级工具层
-    """
-```
+| Agent | 职责 | 运行模式 |
+|-------|------|----------|
+| **监控 Agent** | 多维度巡检，异常检测，告警聚合 | 事件驱动 + 定时巡检 |
+| **诊断 Agent** | 多步推理排查，根因定位，影响面评估 | 按需触发（告警/手动） |
+| **修复 Agent** | 已知故障自动修复，回滚操作 | 诊断结论触发（需确认） |
+| **安全 Agent** | 漏洞扫描，基线检查，合规审计 | 定时 + 手动 |
+| **变更 Agent** | 发布前风险评估，部署后验证，失败回滚 | CI/CD 事件触发 |
+| **成本 Agent** | 资源使用分析，降本建议，ROI 模型 | 定时日报/周报 |
+| **知识 Agent** | 故障归档，案例匹配，复盘报告生成 | 事件解决后触发 |
+| **架构 Agent** | 容量预测，瓶颈分析，高可用评估 | 周报触发 |
+| **助手 Agent** | 自然语言交互，日报/周报，主动提醒 | 用户 @提及 |
+| **调度 Agent** | 多 Agent 协同编排，任务优先级，值班轮转 | 常驻 |
 
-### Discovery Engine 自动发现
+### 工具分层
 
-多 Provider 抽象层，一套代码适配多种基础设施：
-
-| Provider | 发现内容 | 发现方式 |
-|----------|----------|----------|
-| **Kubernetes** | Deployment/Service/Pod/Node/ConfigMap | K8s API (in_cluster / kubeconfig / context) |
-| **AWS EC2** | 实例/安全组/标签 | boto3 + AWS API |
-| **SSH VM** | 进程/端口/中间件 | SSH + `ss`/`ps`/`lsof` |
-| **阿里云 ECS** | 实例/标签 (未来) | alibabacloud SDK |
-
-发现结果幂等 upsert 到 PostgreSQL，支持 K8s↔VM 混合拓扑桥接：
+不是一次性把所有工具描述塞给模型。工具按使用场景分 4 层，Agent 根据当前推理阶段按需加载：
 
 ```
-exchange-gateway (K8s) ──→ MySQL:3306 (VM 192.168.1.50) ──→ exchange-order (K8s)
-                         ──→ Redis:6379  (VM 192.168.1.51)
+▼ 感知层 — 查日志 / 查指标 / 查拓扑 / 查事件        （永远可用）
+▼ 分析层 — 链路追踪 / 依赖分析 / 性能剖析 / 历史匹配  （诊断时加载）
+▼ 决策层 — 风险评估 / 容量预测 / 影响面计算          （决策时加载）
+▼ 执行层 — 重启服务 / 回滚部署 / 漏洞扫描 / 生成规则  （确认后加载）
 ```
 
-### Trace 链路拓扑
+这种设计让每次推理的上下文保持在核心信息范围内，避免了"把所有工具一股脑塞进去"导致的注意力分散和成本浪费。
 
-**零新组件**，直接从现有 ES `trace_log` 索引还原真实调用链：
+---
 
-```
-GET /api/topology/trace-graph?service=exchange-gateway&hours=24
+## 知识引擎 (RAG)
 
-→ ES Aggregation: traceId terms → 拉取全部事件
-→ 按 serviceName/timestamp 排序 → DAG 边聚合
-→ 中间件识别（从 javaModule + thread + logMessage）:
-   · MySQL:  Logic SQL / Actual SQL / JDBC / MyBatis / ShardingSphere
-   · Redis:  Redis / Redisson / Jedis / ZSet
-   · RabbitMQ: Rabbit / RoutingKey / Queue / MQ.Producer / SendToMatch
-→ 延迟解析（从日志正文正则提取）:
-   · 耗时(12 ms) / 12.5毫秒 / duration: 8ms / cost: 3.2ms
-→ 敏感信息脱敏: apiKey/password/token → [REDACTED]
+### 为什么需要 RAG
 
-返回:
-{
-  "nodes": [{id, name, type: service|middleware, traceCount, errorCount}],
-  "edges": [{from, to, traceCount, avgLatencyMs, p95LatencyMs, errorCount, health}],
-  "traces": [{traceId, services, components, eventCount, hasError, maxDurationMs}]
-}
-```
+大模型的训练数据是通用的，它不知道你的具体系统长什么样。当 Agent 诊断一个故障时，它需要的不是"MySQL 连接超时怎么处理"这种通用知识，而是"上周三 exchange-order 服务也出现过同样的连接池耗尽，当时的根因是 Redis 主从切换导致的所有连接同时重建"——这是只有你的系统才有的知识。
 
-`GET /api/topology/traces/{traceId}` 返回完整时间线，每条事件带 `component` 标签和 `durationMs`。
-
-### 混合检索 RAG
-
-PostgreSQL 单库解决向量 + 全文双路检索，不引入 Elasticsearch / Milvus：
+### 检索流程
 
 ```
-Query → bge-small embed (512d) → pgvector HNSW 近似检索 (cosine ≤> 权重 0.7)
-                                 + ts_rank 全文检索 (权重 0.3)
-      → Top-K 召回
-      → bge-reranker-v2-m3 Cross-Encoder 精排 (Top-3)
-      → 内容截断 1200 字符 → 注入 LLM context
+用户查询 / Agent 提问
+      │
+      ▼
+  语义向量化（本地推理，零外部 API 成本）
+      │
+      ├──→ 向量检索（语义相似度，召回 70%）
+      │
+      └──→ 关键词检索（精确匹配，召回 30%）
+      │
+      ▼
+  融合排序（加权合并两路结果）
+      │
+      ▼
+  精排模型重打分（Cross-Encoder，深度语义对齐）
+      │
+      ▼
+  Top-3 结果注入 Agent 上下文
 ```
 
-五源自动入库：
-1. **incident_resolution** — Incident 解决后自动向量化归档
-2. **manual_document** — Markdown/PDF 上传
-3. **alert_rule** — Prometheus 规则自动同步
-4. **log_pattern** — ES 日志异常模式提取
-5. **k8s_event_pattern** — K8s Warning Event 模式学习
-
-**飞轮效应**：首次某类故障需 5-10 分钟 ReAct 排查 → 解决后自动入库 → 下次同类事件 RAG 命中 Top-1 → <30 秒直达 runbook。
-
-### 多环境 Provider 抽象
-
-单套代码多环境部署，环境由部署时 `ENVIRONMENT` 环境变量注入：
+### 知识的生命周期
 
 ```
-ENVIRONMENT=test      → K8S_CONTEXT=test,  ES=test-es:9200
-ENVIRONMENT=prod      → K8S_CONTEXT=prod,  ES=prod-es.acme.com:443
-ENVIRONMENT=futures   → K8S_CONTEXT=futures, ES=futures-es:9200
+故障发生 → Agent 诊断排查 → 解决 → 自动归档
+                                         │
+                    ┌────────────────────┘
+                    ▼
+              结构化为知识条目
+                    │
+                    ├── 原始日志片段
+                    ├── 指标快照
+                    ├── 根因摘要
+                    ├── 修复步骤
+                    └── 关联服务/中间件标签
+                    │
+                    ▼
+              向量化存入知识库
+                    │
+                    ▼
+              下次同类事件 → 毫秒级命中 → 直接给出处理方案
 ```
 
-Provider 接口统一，三路 K8s context 自动检测：
-```python
-if settings.K8S_IN_CLUSTER:
-    config.load_incluster_config()           # Pod 内 ServiceAccount
-elif settings.K8S_CONTEXT:
-    config.load_kube_config(context=...)     # 指定 context
-else:
-    config.load_kube_config()               # 默认 ~/.kube/config
-```
+### 飞轮效应
 
-### 安全扫描引擎
+系统的知识不是静态的。每次故障处理都在喂养知识库，知识库越丰富，Agent 诊断越准，处理越快。从"每次排查 30 分钟"到"第三次同类事件 30 秒定位"——这是运维 AI 化的核心价值。
 
-合并自 PentestAgent，去掉 butian/vulbox 外部对接，聚焦平台自身安全：
+---
 
-| 工具 | 用途 | 集成方式 |
-|------|------|----------|
-| **Nuclei 3.3** | 漏洞模板扫描 (3000+ 模板) | Go 二进制，Docker 内下载 |
-| **Subfinder 2.6** | 子域名发现 (被动) | Go 二进制 |
-| **httpx 1.6** | HTTP 探测 & 指纹 | Go 二进制 |
-| **nmap** | 端口扫描 | apt 安装 |
+## 可观测性
 
-调度策略：
-- **全平台定时扫描**：每天 03:00 Cron，扫描所有已知服务域名和 IP
-- **手动域名扫描**：用户输入域名，即时触发
-- **并发限制**：`MAX_CONCURRENT_SCANS=3`，避免打垮目标
+### 统一数据面
 
-### 发布管理 & 自动回滚
-
-对接 GitLab CI + ArgoCD，全流程自动化：
+不引入新的采集管道。平台作为**只读消费者**接入现有的可观测性基础设施：
 
 ```
-GitLab MR merged → Webhook → 变更管理 Agent
-  → 发布前风险评估 (diff 分析 + 历史故障关联)
-  → ArgoCD Sync (灰度 10% → 50% → 100%)
-  → 部署后验证 (health check + 错误率 + 延迟 P95)
-  → 失败? → 自动回滚 (kubectl rollout undo)
-  → 成功? → 通知 + 归档
+现有的 Prometheus（指标）
+现有的 Elasticsearch（日志）
+现有的日志埋点 traceId（链路）
+        │
+        ▼
+   BestNative 统一查询层
+        │
+        ├── 监控 Agent：PromQL 动态生成，多指标交叉异常检测
+        ├── 诊断 Agent：日志 + 指标 + 链路三源交叉推理
+        └── 拓扑引擎：从日志 traceId 还原真实调用拓扑
+```
+
+### 服务拓扑
+
+传统拓扑依赖 K8s Service/Deployment 的静态声明——它画的是"配置上应该怎样调用"，不是"实际在怎样调用"。
+
+BestNative 从分布式日志中提取 `traceId`，根据同一链路上服务出现的顺序还原**真实的运行时调用关系**。同时自动识别日志中出现的中间件（数据库、缓存、消息队列），形成完整的：
+
+```
+网关 → 业务服务A → 缓存(Redis) → 业务服务B → 数据库(MySQL)
+                      │
+                      └── 消息队列(RabbitMQ) → 业务服务C
+```
+
+每条边上带有统计信息：调用次数、错误率、平均延迟、P95 延迟——这些数据全部来自生产日志，不需要额外接入 APM 或修改代码。
+
+---
+
+## 自动化运维
+
+### 从告警到修复的完整链路
+
+```
+1. 监控 Agent 检测异常
+   └── 指标突变 / 日志错误率飙升 / 资源耗尽
+
+2. 告警聚合 & 去重
+   └── 同一个根因引发的多条告警合并为一个事件
+
+3. 事件丰富化
+   └── 自动关联受影响的服务、最近的变更、历史上的类似事件
+
+4. 诊断 Agent 启动多步排查
+   └── 查日志 → 查指标 → 追踪链路 → 查变更记录 → 查知识库
+   └── 输出：根因假设 + 置信度 + 影响面 + 建议操作
+
+5. 修复 Agent 执行（or 建议人工介入）
+   └── 已知模式 → 匹配 Runbook → 自动执行 → 验证效果
+   └── 未知模式 → 给出分析报告 → 等待人工决策
+
+6. 故障归档
+   └── 完整时间线 + 根因 + 修复步骤 → 自动入库
+```
+
+### 发布管理
+
+```
+代码合并 → 变更 Agent 分析 diff
+         → 评估风险（改了哪些服务？历史上改这些地方出过事吗？）
+         → 生成发布策略（全量 / 灰度 / 金丝雀）
+         → 执行部署
+         → 部署后验证（错误率、延迟、资源使用是否正常？）
+         → 异常？→ 自动回滚 → 通知原因
+         → 正常？→ 通知完成 → 归档
 ```
 
 ---
 
-## 数据模型
+## 多环境管理
 
-17 张 PostgreSQL 表，覆盖资源、事件、安全、发布、知识、排班六大领域：
+一套代码，按环境部署。每个环境（测试/生产/灾备）独立运行一个 BestNative 实例，环境差异由部署时注入的配置决定，不通过代码分支管理。
 
-```sql
--- 核心表 (8)
-clusters        — K8s 集群 / VM 节点组
-nodes           — 集群节点 (CPU/内存/角色)
-services        — 业务服务 (副本/镜像/版本/健康)
-middlewares     — 中间件 (MySQL/Redis/RabbitMQ 等)
-service_dependencies — 服务依赖边
-bridges         — K8s↔VM 跨环境桥接
-knowledge_chunks — RAG 知识块 (pgvector HNSW 索引)
-incidents       — 事件/告警
+支持的接入方式：
+- **容器平台** — 通过标准 API 发现 Service / Deployment / Pod 及其实时状态
+- **云主机** — 通过云 API 发现实例、安全组、标签
+- **裸金属 / 私有 VM** — 通过 SSH 探测进程、端口、中间件
+- **混合环境** — 容器服务调用 VM 上的数据库？自动建立跨环境拓扑桥接
 
--- 业务表 (9)
-incident_events — 事件时间线
-analysis_reports — AI 根因分析报告
-alert_rules     — 告警策略 (含 auto_generated 标记)
-deployments     — 发布记录
-deploy_verifications — 部署后验证
-security_scans  — 安全扫描结果
-scan_findings   — 漏洞发现
-schedules       — 排班表
-users / roles   — 认证授权
-```
+---
+
+## 安全合规
+
+安全扫描引擎定时检测平台自身的安全性，不做对外攻击平台。
+
+- **资产发现** — 自动识别所有暴露的服务域名、IP、端口
+- **漏洞扫描** — 基于漏洞模板库的自动化检测
+- **基线检查** — 配置合规检查，偏离基线自动告警
+- **合规报告** — 自动生成审计报告
+- **调度策略** — 全平台定时扫描（每日凌晨）+ 手动按需扫描
 
 ---
 
 ## 快速开始
 
-### 前置条件
-
-- Docker & Docker Compose
-- Python 3.11+ (本地开发) 或仅 Docker (容器化运行)
-- K8s 集群访问权限 (用于拓扑发现，可选)
-- ES 集群访问权限 (用于 trace_log 链路，可选)
-
-### 一键启动
-
 ```bash
 git clone https://github.com/sharkchenshun/bestnative.git
 cd bestnative
 
-# 复制环境变量模板，填入实际配置
+# 配置环境变量
 cp backend/.env.example backend/.env
-# 编辑 backend/.env 填入 ES/K8s/LLM 连接信息
+# 编辑 backend/.env 填入实际的数据库、LLM API Key、集群连接信息
 
 # 启动全栈
 docker compose up -d --build
 
-# 验证
-curl http://localhost:3456/api/health
+# 访问
 # 前端 → http://localhost:3456
+# API  → http://localhost:3456/api/health
 ```
 
-### 本地开发
-
-```bash
-# 后端
-cd backend
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-
-# 前端 (新终端)
-npm install --legacy-peer-deps
-npm run dev  # → http://localhost:3456
-```
+完整环境变量说明见 `backend/app/core/config.py`。
 
 ---
 
-## 项目结构
+## 架构
 
 ```
-bestnative/
-├── backend/
-│   ├── app/
-│   │   ├── agents/             # 10 Agent 实现
-│   │   │   ├── base.py         #   Agent 抽象基类
-│   │   │   ├── react.py        #   ReAct 执行器 (工具调用循环 + token控制 + 摘要)
-│   │   │   ├── llm.py          #   LLM 客户端 (DeepSeek)
-│   │   │   ├── diagnosis/      #   诊断 Agent
-│   │   │   ├── security/       #   安全 Agent
-│   │   │   ├── change/         #   变更 Agent
-│   │   │   ├── monitor/        #   监控 Agent
-│   │   │   └── coordinator/    #   协作调度 Agent
-│   │   ├── api/                # FastAPI 路由
-│   │   │   ├── topology.py     #   拓扑 / Trace 链路
-│   │   │   ├── incidents.py    #   事件中心
-│   │   │   ├── security.py     #   安全合规
-│   │   │   ├── deployments.py  #   发布管理
-│   │   │   └── health.py       #   健康检查
-│   │   ├── providers/          # 多环境适配层
-│   │   │   ├── base.py         #   Provider 接口
-│   │   │   ├── kubernetes.py   #   K8s (in_cluster / kubeconfig / context)
-│   │   │   ├── aws.py          #   AWS EC2
-│   │   │   └── ssh_vm.py       #   SSH 裸金属 / VM
-│   │   ├── engine/
-│   │   │   └── discovery.py    # Discovery Engine (自动发现 → 幂等写入)
-│   │   ├── services/
-│   │   │   ├── trace_topology.py  # ES trace_log DAG 聚合 + 中间件识别 + 延迟解析
-│   │   │   ├── elasticsearch.py   # ES REST 客户端 (httpx, HTTPS 自动回退)
-│   │   │   └── prometheus.py      # Prometheus 只读客户端
-│   │   ├── tools/
-│   │   │   ├── registry.py     #   分层工具注册表 (4 层, 22 工具)
-│   │   │   ├── observability.py #  可观测性工具
-│   │   │   └── scanners.py     #   安全扫描工具
-│   │   ├── rag/
-│   │   │   ├── embedding.py    #   bge-small 本地 embedding
-│   │   │   ├── retriever.py    #   混合检索 (向量 0.7 + BM25 0.3) + rerank
-│   │   │   └── ingest.py       #   五源自动入库
-│   │   ├── models/             # SQLAlchemy ORM (17 张表)
-│   │   ├── schemas/            # Pydantic v2 校验
-│   │   ├── core/               # 配置 / 数据库 / 安全 / 日志
-│   │   ├── main.py             # FastAPI 应用入口
-│   │   ├── bootstrap.py        # 首次启动数据初始化
-│   │   └── scheduler.py        # APScheduler 定时任务
-│   ├── alembic/                # 数据库迁移
-│   ├── entrypoint.sh           # Docker 启动脚本 (kubeconfig 复制 + context 配置)
-│   ├── requirements.txt        # 核心依赖
-│   ├── requirements-ml.txt     # ML 重依赖 (sentence-transformers, 懒加载)
-│   └── Dockerfile
-├── src/
-│   ├── app/                    # Next.js 14 App Router (12 页面)
-│   │   ├── page.tsx            #   全局总览 (K8s 服务/Pod/日志/重启/指标)
-│   │   ├── topology/           #   服务拓扑 (Trace 链路 DAG + Timeline)
-│   │   ├── incidents/          #   事件中心
-│   │   ├── deployments/        #   发布管理
-│   │   ├── security/           #   安全合规
-│   │   ├── monitoring/         #   监控面板
-│   │   ├── knowledge/          #   知识库
-│   │   ├── inspections/        #   巡检报告
-│   │   ├── cost/               #   成本分析
-│   │   ├── schedules/          #   排班管理
-│   │   ├── settings/           #   平台设置
-│   │   └── copilot/            #   AI 助手
-│   ├── components/layout/      # 布局组件 (Sidebar)
-│   ├── lib/                    # 类型定义 / 工具函数
-│   └── middleware.ts           # Next.js Edge Middleware (同源 /api/* 代理)
-├── docker-compose.yml          # 全栈编排 (frontend + api + postgres + redis)
-├── frontend/Dockerfile         # Next.js standalone 构建 (multi-stage)
-├── ci-configs/                 # 业务项目 CI/Dockerfile 集中托管
-└── docs/                       # 架构图 / 集成文档
+┌─────────────────────────────────────────────────┐
+│                    前端控制台                      │
+│          全局总览 · 拓扑 · 事件 · 知识库            │
+├─────────────────────────────────────────────────┤
+│                    API 网关                       │
+│         认证 · 路由 · 限流 · 同源代理              │
+├──────┬──────┬──────┬──────┬──────┬──────────────┤
+│ 监控  │ 诊断  │ 修复  │ 变更  │ 安全  │     ...      │
+│ Agent │ Agent │ Agent │ Agent │ Agent │  (10 Agent) │
+├──────┴──────┴──────┴──────┴──────┴──────────────┤
+│              Agent 执行引擎                       │
+│       推理循环 · 工具调度 · 上下文管理              │
+├─────────────────────────────────────────────────┤
+│           知识引擎 (RAG)                          │
+│      向量检索 + 关键词检索 + 精排重打分             │
+├─────────────────────────────────────────────────┤
+│              统一数据层                            │
+│   业务数据 / 向量 / 全文索引  │  缓存 / 消息总线    │
+├─────────────────────────────────────────────────┤
+│             外部系统（只读接入）                     │
+│      监控系统  │  日志平台  │  容器平台  │  云 API    │
+└─────────────────────────────────────────────────┘
 ```
-
----
-
-## 环境变量
-
-| 变量 | 必需 | 说明 |
-|------|------|------|
-| `ENVIRONMENT` | 是 | 部署环境: `test` / `prod` / `futures` / `development` |
-| `DATABASE_URL` | 是 | PostgreSQL 连接 (asyncpg) |
-| `REDIS_URL` | 是 | Redis 连接 |
-| `ES_HOST` | 否 | Elasticsearch 地址 (用于 trace_log 链路) |
-| `ES_PORT` | 否 | ES 端口 (默认 9200) |
-| `ES_USER` / `ES_PASSWORD` | 否 | ES 认证 |
-| `DEEPSEEK_API_KEY` | 是 | DeepSeek API Key |
-| `DEEPSEEK_MODEL` | 否 | 模型名 (默认 `deepseek-chat`) |
-| `K8S_CONTEXT` | 否 | K8s context (空则用 current-context) |
-| `KUBECONFIG` | 否 | kubeconfig 路径 (空则 ~/.kube/config) |
-| `CLUSTER_NAME` | 否 | 集群展示名 (默认 `default`) |
-| `SECRET_KEY` | **生产必须** | JWT 签名密钥 (≥32 字符) |
-| `GITLAB_WEBHOOK_TOKEN` | 否 | GitLab Webhook 校验 |
-| `ARGOCD_SERVER` / `ARGOCD_TOKEN` | 否 | ArgoCD 对接 |
-
-完整配置见 `backend/app/core/config.py`。
 
 ---
 
 ## 设计原则
 
-### 1. 零新组件，复用现有基础设施
-不引入 Kafka、Milvus、Neo4j、ClickHouse、Jaeger。PostgreSQL + Redis 构成双核心数据层，ES/Prometheus 只读复用，不增加采集管道。
+**复用优于新建。** 不引入新的基础设施组件。监控、日志、链路全部复用现有系统，平台只做智能分析层。
 
-### 2. Token 经济学驱动设计
-工具分 4 层按需加载，单次 ReAct system prompt < 2500 tokens；3 轮后自动摘要历史；RAG 检索 Top-3 精排 + 1200 字符截断注入。总 token 消耗比全量加载方案降低 60% 以上。
+**本地推理优先。** 向量化、精排等高频操作全部本地完成，不依赖外部 API。只在需要复杂推理时调用大模型。
 
-### 3. 本地推理，零外部 API 费用
-Embedding (bge-small) 和 Rerank (bge-reranker-v2-m3) 全本地运行，不依赖 OpenAI/Cohere 等付费 Embedding API。LLM 调用是最主要的 API 成本，每次 ReAct 循环已做最大优化。
+**知识即壁垒。** 系统越用越聪明。每次故障都在增强下一次的应对能力。这是平台的核心护城河。
 
-### 4. 多环境一套代码
-每个环境独立部署一个 BestNative 实例，`ENVIRONMENT` 环境变量控制所有差异行为。Provider 抽象层统一 K8s/AWS/SSH/阿里云接口。前端不做环境切换器，环境信息通过部署时 `NEXT_PUBLIC_ENV` 构建注入。
+**安全内建。** 自动修复需人工确认。敏感信息自动脱敏。所有操作全链路审计。
 
-### 5. 安全第一
-- JWT 认证 + 角色授权
-- 所有 ES 日志输出自动脱敏 `apiKey/password/token → [REDACTED]`
-- `SECRET_KEY` 生产必须通过环境变量注入，代码中仅保留 dev-only 默认值
-- 安全扫描限于本平台，不接外部漏洞平台
-- 自动修复需要人工确认，全操作审计
-
-### 6. 非必要不引入复杂度
-- 单文件 `docker-compose.yml` 全栈编排，不拆多个 compose 文件
-- 不做微服务拆分，FastAPI 单体 + router 组织
-- 不用 Celery，Redis Pub/Sub + APScheduler 满足需求
-- 不做 GraphQL，REST API + Pydantic 类型安全足够
-- `trace_log` 查询直接用 httpx REST API，避免 elasticsearch-py 版本兼容痛点
-
----
-
-## 路线图
-
-- [x] 全局总览 — K8s Service/Pod 实时状态、日志、重启、Top
-- [x] 服务拓扑 — ES trace_log 真实 Trace 链路 + 中间件识别 + 延迟解析
-- [x] Discovery Engine — 多 Provider 自动发现 + 幂等写入
-- [x] 分层工具注册表 — 4 层 22 工具
-- [x] ReAct 执行器 — Token 控制 + 历史摘要
-- [x] 混合检索 RAG — pgvector + BM25 + 本地 Rerank
-- [x] 安全扫描引擎 — Nuclei + Subfinder + httpx + nmap
-- [x] 事件中心 — 告警归并/去重/丰富化
-- [ ] 诊断 Agent ReAct 全链路（日志→指标→trace→事件关联）
-- [ ] 自动修复 Agent（已知故障模式 Runbook 自动执行 + 人工确认）
-- [ ] 成本 Agent（AWS Cost Explorer + K8s 资源优化）
-- [ ] 发布管理对接 ArgoCD（灰度策略 + 自动验证 + 失败回滚）
-- [ ] 知识库五源全自动入库
-- [ ] 多 Agent 协作调度（上下文传递 + 任务依赖）
-- [ ] 阿里云 ECS Provider
+**简单至上。** 单仓库、单配置文件、一条命令启动。不做微服务拆分，不做不必要的抽象层。
 
 ---
 
