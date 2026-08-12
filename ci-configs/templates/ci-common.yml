@@ -1,0 +1,169 @@
+# templates/ci-common.yml — 共享 CI 配置（日志/Slack/全局变量模板）
+# 供各项目 ci.yml 引用，避免每个项目重复 200+ 行模板代码
+
+# ==== 日志函数 ====
+.before_script_common: &before_script_common
+  - |
+    set -u
+    set -o pipefail
+    set +e
+    exec > >(tee -a job.log)
+    log_info() {
+      printf "[INFO]  %s - %b\n--------------------\n\n" "$(TZ=Asia/Tokyo date "+%Y-%m-%d %H:%M:%S")" "$*"
+    }
+    log_error() {
+      printf "[ERROR] %s - %b\n--------------------\n\n" "$(TZ=Asia/Tokyo date "+%Y-%m-%d %H:%M:%S")" "$*"
+    }
+    check_fail() {
+      local op_stage="$1"; local exit_code="$2"; local op_details="${3:-no-details}"; local error_msg=""
+      if [[ -f "${RES_TMP_FILE}" ]]; then error_msg=$(cat "${RES_TMP_FILE}"); fi
+      if [[ "${exit_code}" -eq 0 ]]; then
+        log_info "$(printf "%s成功\n输出详情\n%s" "${op_stage}" "${op_details}")"
+      else
+        if [[ -z $(echo -n "${error_msg}" | tr -d '[:space:]') ]]; then
+          log_error "$(printf "%s" "RES_TMP_FILE 文件为空，退出命令执行")"
+          exit "${exit_code}"
+        fi
+        log_error "$(printf "%s失败\n失败详情\n%s" "${op_stage}" "${error_msg}")"
+        rm -f "${RES_TMP_FILE}"; exit "${exit_code}"
+      fi
+      rm -f "${RES_TMP_FILE}"
+    }
+
+# ==== Slack 通知模板 ====
+.default_notify_slack: &notify_slack
+  after_script:
+    - |
+      PROJECT_EMOJI="🛠️"
+      NEWLINE=$'\n'
+      SLACK_USERNAME="CICD"
+      SLACK_COLOR="good"
+      SLACK_ERROR_SUMMARY=""
+      if [[ "${CI_JOB_STATUS}" == "success" ]]; then
+        case "${CI_COMMIT_BRANCH}" in
+          dev|test)
+            if [[ "${CI_JOB_NAME}" != "deploy" ]]; then echo "[INFO] 跳过 Slack（非 deploy 成功）"; exit 0; fi ;;
+          main)
+            if [[ "${CI_JOB_NAME}" != "update-helm" ]]; then echo "[INFO] 跳过 Slack（非 update-helm 成功）"; exit 0; fi ;;
+          *) echo "[INFO] 跳过 Slack"; exit 0 ;;
+        esac
+      fi
+      TRIGGER_LOGIN=$(echo "${GITLAB_USER_LOGIN:-}" | tr '[:upper:]' '[:lower:]')
+      SLACK_MENTION=""
+      if [[ -n "${SLACK_USER_ID_MAP:-}" ]]; then
+        SLACK_UID=$(jq -r --arg k "${TRIGGER_LOGIN}" '.[$k] // empty' "${SLACK_USER_ID_MAP}" 2>/dev/null || true)
+        [[ -n "${SLACK_UID}" && "${SLACK_UID}" != "null" ]] && SLACK_MENTION="<@${SLACK_UID}>"
+      fi
+      START_UTC=$(date -d "${CI_JOB_STARTED_AT}" "+%s")
+      END_UTC=$(date -d "${CI_JOB_FINISHED_AT:-now}" "+%s")
+      DURATION_SEC=$(( END_UTC - START_UTC )); (( DURATION_SEC < 0 )) && DURATION_SEC=0
+      DURATION_STR=$(printf "%02d分%02d秒" $(( DURATION_SEC / 60 )) $(( DURATION_SEC % 60 )))
+      EXEC_START_TIME=$(TZ=Asia/Tokyo date -d "@${START_UTC}" "+%m-%d %H:%M:%S")
+      TITLE_BASE="${PROJECT_EMOJI} *发布环境：* ${CI_COMMIT_BRANCH}  |  *项目：* ${CI_PROJECT_NAME}  |  *当前版本：* ${DEPLOY_VERSION}  ${NEWLINE} *任务：* ${CI_JOB_NAME}  |  *提交说明：* ${CI_COMMIT_MESSAGE}"
+      if [[ "${CI_JOB_STATUS}" == "success" ]]; then TITLE="${TITLE_BASE} *执行成功*"
+      else
+        SLACK_COLOR="danger"; TITLE="${TITLE_BASE} *执行失败*"
+        if [[ -f job.log ]]; then
+          LOG_SNIPPET=$(tail -n 20 job.log | sed -E "s/\x1B\[[0-9;]*[mK]//g")
+          SLACK_ERROR_SUMMARY="*错误摘要:*${NEWLINE}\`\`\`${NEWLINE}${LOG_SNIPPET}${NEWLINE}\`\`\`"
+        else SLACK_ERROR_SUMMARY="*错误摘要:* 无法获取 job.log 内容"; fi
+      fi
+      [[ -n "${SLACK_MENTION}" ]] && TITLE="${SLACK_MENTION}${NEWLINE}${TITLE}"
+      TEXT="*开始时间:* ${EXEC_START_TIME}  |  *耗时:* ${DURATION_STR}  |  *触发者:* ${GITLAB_USER_NAME}"
+      [[ -n "${SLACK_ERROR_SUMMARY}" ]] && TEXT="${TEXT}${NEWLINE}${SLACK_ERROR_SUMMARY}"
+      TEXT="${TEXT}${NEWLINE}<${CI_JOB_URL}|查看 Job 详情>"
+      JSON_PAYLOAD=$(jq -n --arg username "${SLACK_USERNAME}" --arg color "${SLACK_COLOR}" --arg title "${TITLE}" --arg text "${TEXT}" '{username: $username, attachments: [{color: $color, text: ($title + "\n" + $text), mrkdwn_in: ["text"]}]}')
+      SLACK_RES=$(curl -sSk --fail ${CURL_RETRY_CONF} -X POST -H "Content-type: application/json" --data "${JSON_PAYLOAD}" "${SLACK_URL}"); EXIT_CODE=$?
+      [ "${EXIT_CODE}" -eq 0 ] && echo "Slack ✅" || echo "Slack ❌: ${SLACK_RES}"
+
+# ==== 通用 Job 模板 ====
+.default-job-template:
+  image: "${HARBOR_HOST}/base/gitlab-ci-base-image"
+  variables:
+    GLOBAL_ENV_FILE: "prepare.env"
+    HARBOR_HOST: ${HARBOR_HOST}:80
+    RES_TMP_FILE: "res_tmp_file"
+  before_script:
+    - *before_script_common
+  rules:
+    - if: "$CI_COMMIT_BRANCH =~ /^(dev|test|main)$/"
+      when: on_success
+    - when: never
+  resource_group: "${CI_COMMIT_BRANCH}-${CI_PROJECT_NAME}"
+
+# ==== 通用变量声明（prepare_env job）====
+# 参数化：各项目可通过 variables 覆盖以下变量
+.prepare_env_vars: &prepare_env_vars
+  - |
+    TZ=Asia/Tokyo date -d "${CI_PIPELINE_CREATED_AT}" +%Y%m%d%H%M > "${RES_TMP_FILE}" 2>&1; EXIT_CODE=$?
+    PIPELINE_TIMESTAMP=$(cat "${RES_TMP_FILE}")
+    check_fail "版本时间标签初始化" "${EXIT_CODE}" "时间标签 ${PIPELINE_TIMESTAMP}"
+    DEFAULT_ECR_ADDR="197461532043.dkr.ecr.ap-northeast-1.amazonaws.com"
+    ECR_ADDR="${ECR_PROD_ADDR:-$DEFAULT_ECR_ADDR}"
+    case "${CI_COMMIT_BRANCH}" in
+      dev)
+        ARGOCD_OP_URL="${ARGOCD_DEVELOP_URL}"
+        ARGOCD_OP_TOKEN="${ARGOCD_DEVELOP_TOKEN}"
+        HELM_IMAGE_URL="${HARBOR_HOST}/${HARBOR_PROJECT}-${CI_COMMIT_BRANCH}/${CI_PROJECT_NAME}"
+        MEVEN_SETTING_FILE_PATH="maven-setting-dev.xml" ;;
+      test)
+        ARGOCD_OP_URL="${ARGOCD_TEST_URL}"
+        ARGOCD_OP_TOKEN="${ARGOCD_TEST_TOKEN}"
+        HELM_IMAGE_URL="${HARBOR_HOST}/${HARBOR_PROJECT}-${CI_COMMIT_BRANCH}/${CI_PROJECT_NAME}"
+        MEVEN_SETTING_FILE_PATH="maven-setting-test.xml" ;;
+      main)
+        ARGOCD_OP_URL="" ; ARGOCD_OP_TOKEN=""
+        HELM_IMAGE_URL="${ECR_ADDR}/${HARBOR_PROJECT}-${CI_COMMIT_BRANCH}/${CI_PROJECT_NAME}"
+        MEVEN_SETTING_FILE_PATH="maven-setting-main.xml" ;;
+    esac
+    VERSION_TAG="${CI_COMMIT_TAG:-v0.0.1}"
+    DEPLOY_VERSION="${VERSION_TAG}-${PIPELINE_TIMESTAMP}"
+    CURL_RETRY_CONF="--retry 5 --retry-delay 5 --retry-max-time 60 --retry-connrefused"
+    MAVEN_SETTING_FILE="settings.xml"
+    MAVEN_DOWNLOAD_URL="http://${GITLAB_URL}/api/v4/projects/${PROJECT_ID}/repository/files/${MEVEN_SETTING_FILE_PATH}/raw?ref=${CI_COMMIT_BRANCH}"
+    MAVEN_CACHE_PATH=".m2/repository"
+    MAVEN_OPTS="-Dmaven.repo.local=${MAVEN_CACHE_PATH}"
+    FULL_BASE_IMAGE="${HARBOR_HOST}/${HARBOR_PROJECT}-${CI_COMMIT_BRANCH}/${CI_PROJECT_NAME}"
+    FULL_IMAGE="${FULL_BASE_IMAGE}:${DEPLOY_VERSION}"
+    DOCKER_HOST="tcp://127.0.0.1:2375"
+    DOCKER_TLS_CERTDIR=""
+    DOCKER_BUILDKIT=1
+    BUILDKIT_PROGRESS="plain"
+    HELM_REPO="helm"
+    HELM_GIT_REPO_PROJECT_NAME="cicd"
+    HELM_GIT_REPO_NAME="${HELM_GIT_REPO_PROJECT_NAME}/${CI_PROJECT_NAME}"
+    HELM_HARBOR_REPO_URL="OCI://${HARBOR_HOST}/${HELM_REPO}-${CI_COMMIT_BRANCH}"
+    ARGOCD_OPT="--plaintext --insecure --grpc-web --http-retry-max 5"
+    ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-${CI_PROJECT_NAME}}"
+    log_info "声明全局变量如下"
+    {
+      echo "VERSION_TAG=${VERSION_TAG}"
+      echo "CURL_RETRY_CONF=${CURL_RETRY_CONF}"
+      echo "DEPLOY_VERSION=${DEPLOY_VERSION}"
+      echo "MAVEN_SETTING_FILE=${MAVEN_SETTING_FILE}"
+      echo "MAVEN_DOWNLOAD_URL=${MAVEN_DOWNLOAD_URL}"
+      echo "MAVEN_CACHE_PATH=${MAVEN_CACHE_PATH}"
+      echo "MAVEN_OPTS=${MAVEN_OPTS}"
+      echo "MEVEN_SETTING_FILE_PATH=${MEVEN_SETTING_FILE_PATH}"
+      echo "FULL_BASE_IMAGE=${FULL_BASE_IMAGE}"
+      echo "FULL_IMAGE=${FULL_IMAGE}"
+      echo "BASE_IMAGE=${BASE_IMAGE}"
+      echo "BUILD_IMAGE_ARGS=${BUILD_IMAGE_ARGS}"
+      echo "BUILD_CONFIG_ARGS=${BUILD_CONFIG_ARGS}"
+      echo "HARBOR_HOST_TAILSCALE=${HARBOR_HOST_TAILSCALE}"
+      echo "DOCKER_HOST=${DOCKER_HOST}"
+      echo "DOCKER_TLS_CERTDIR=${DOCKER_TLS_CERTDIR}"
+      echo "DOCKER_BUILDKIT=${DOCKER_BUILDKIT}"
+      echo "BUILDKIT_PROGRESS=${BUILDKIT_PROGRESS}"
+      echo "HELM_IMAGE_URL=${HELM_IMAGE_URL}"
+      echo "HELM_REPO=${HELM_REPO}"
+      echo "HELM_GIT_REPO_PROJECT_NAME=${HELM_GIT_REPO_PROJECT_NAME}"
+      echo "HELM_GIT_REPO_NAME=${HELM_GIT_REPO_NAME}"
+      echo "HELM_HARBOR_REPO_URL=${HELM_HARBOR_REPO_URL}"
+      echo "ARGOCD_OP_URL=${ARGOCD_OP_URL}"
+      echo "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
+      echo "ARGOCD_OPT=${ARGOCD_OPT}"
+    } | tee "${GLOBAL_ENV_FILE}"
+    echo "ARGOCD_OP_TOKEN=${ARGOCD_OP_TOKEN}" >> "${GLOBAL_ENV_FILE}"
+    echo "HELM_GIT_REPO_URL=http://oauth2:${GITLAB_API_TOKEN}@${GITLAB_URL}/sre/${HELM_GIT_REPO_PROJECT_NAME}.git" >> "${GLOBAL_ENV_FILE}"
+    log_info "全局变量声明完成"
