@@ -2,7 +2,7 @@
 # app/api/topology.py — 拓扑与资源查询 + Pod 操作
 # ============================================================
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,13 +45,21 @@ async def trace_graph(
     trace_limit: int = Query(200, ge=1, le=500),
 ):
     """从 ES trace_log 按 traceId 聚合真实调用链路。"""
-    return await get_trace_graph(service=service, hours=hours, trace_limit=trace_limit)
+    try:
+        return await get_trace_graph(service=service, hours=hours, trace_limit=trace_limit)
+    except RuntimeError as exc:
+        logger.warning("trace_graph.es.failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Elasticsearch 查询失败：{exc}") from exc
 
 
 @router.get("/traces/{trace_id}")
 async def trace_timeline(trace_id: str, size: int = Query(500, ge=1, le=2000)):
     """查看单个 traceId 的完整日志时间线。"""
-    return await get_trace_timeline(trace_id=trace_id, size=size)
+    try:
+        return await get_trace_timeline(trace_id=trace_id, size=size)
+    except RuntimeError as exc:
+        logger.warning("trace_timeline.es.failed", error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Elasticsearch 查询失败：{exc}") from exc
 
 
 @router.get("/clusters")

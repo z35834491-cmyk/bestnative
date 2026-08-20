@@ -1,11 +1,22 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertTriangle, Database, GitFork, Loader2, Search, WifiOff, X, Zap, ZoomIn, ZoomOut } from 'lucide-react'
 import { cn, healthDot } from '@/lib/utils'
 import type { TopoEdge, TopoNode, TraceGraph, TraceSummary, TraceTimeline } from '@/lib/types'
 
 const API = ''
+
+// 安全读取 API 错误信息：后端 5xx 可能返回纯文本（如 "Internal Server Error"），
+// 直接 res.json() 会抛 "Unexpected token" 异常，这里统一转成可读文案。
+async function readApiError(res: Response): Promise<string> {
+  try {
+    const data = await res.json()
+    return data.detail || data.error || `请求失败 (HTTP ${res.status})`
+  } catch {
+    return `请求失败 (HTTP ${res.status})`
+  }
+}
 
 export default function TopologyPage() {
   const [graph, setGraph] = useState<TraceGraph | null>(null)
@@ -15,41 +26,58 @@ export default function TopologyPage() {
   const [selectedEdge, setSelectedEdge] = useState<TopoEdge | null>(null)
   const [scale, setScale] = useState(1)
   const [service, setService] = useState('exchange-gateway')
+  const [serviceDraft, setServiceDraft] = useState('exchange-gateway')
   const [hours, setHours] = useState(24)
   const [timeline, setTimeline] = useState<TraceTimeline | null>(null)
   const [timelineLoading, setTimelineLoading] = useState(false)
 
+  const abortRef = useRef<AbortController | null>(null)
+  const timelineAbortRef = useRef<AbortController | null>(null)
+
+  // 输入防抖：停止输入 400ms 后才提交查询，避免每个字符都打一次 ES
+  useEffect(() => {
+    const t = setTimeout(() => setService(serviceDraft.trim() || 'exchange-gateway'), 400)
+    return () => clearTimeout(t)
+  }, [serviceDraft])
+
   const fetchGraph = useCallback(async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     setLoading(true); setError(null); setSelectedEdge(null); setTimeline(null)
     try {
-      const res = await fetch(`${API}/api/topology/trace-graph?service=${encodeURIComponent(service)}&hours=${hours}&trace_limit=200`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || data.error || 'API error')
-      setGraph(data)
+      const res = await fetch(`${API}/api/topology/trace-graph?service=${encodeURIComponent(service)}&hours=${hours}&trace_limit=200`, { signal: controller.signal })
+      if (!res.ok) throw new Error(await readApiError(res))
+      setGraph(await res.json())
     } catch (e) {
+      if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : '无法连接 API')
     } finally {
-      setLoading(false)
+      if (abortRef.current === controller) setLoading(false)
     }
   }, [service, hours])
 
   useEffect(() => { fetchGraph() }, [fetchGraph])
 
   const openTrace = async (traceId: string) => {
+    timelineAbortRef.current?.abort()
+    const controller = new AbortController()
+    timelineAbortRef.current = controller
     setTimelineLoading(true)
     try {
-      const res = await fetch(`${API}/api/topology/traces/${encodeURIComponent(traceId)}?size=800`)
+      const res = await fetch(`${API}/api/topology/traces/${encodeURIComponent(traceId)}?size=800`, { signal: controller.signal })
+      if (!res.ok) throw new Error(await readApiError(res))
       setTimeline(await res.json())
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setTimeline(null)
     } finally {
-      setTimelineLoading(false)
+      if (timelineAbortRef.current === controller) setTimelineLoading(false)
     }
   }
 
-  if (error) {
-    return <div className="h-full flex items-center justify-center"><div className="text-center space-y-3"><WifiOff size={40} className="text-red-400 mx-auto" /><p className="text-sm text-shark-muted">{error}</p><button onClick={fetchGraph} className="text-xs text-shark-accent border border-shark-accent/30 px-3 py-1.5 rounded">重试</button></div></div>
-  }
-
-  const nodes = layoutNodes(graph?.nodes || [])
+  // 所有 hooks / 派生计算必须无条件执行（React Hooks 规则）：
+  // 派生值放在 error 早退之前，避免 error 状态切换时 hooks 数量变化触发崩溃。
+  const nodes = useMemo(() => layoutNodes(graph?.nodes || []), [graph])
   const edges = graph?.edges || []
   const traces = graph?.traces || []
   const serviceOptions = useMemo(() => [...new Set([service, ...nodes.filter(n => n.type === 'service').map(n => n.name), ...traces.flatMap(t => t.services)])].filter(Boolean).sort(), [nodes, traces, service])
@@ -58,6 +86,10 @@ export default function TopologyPage() {
   const maxX = Math.max(...nodes.map(n => (n.x || 0) + 150), 900) + 40
   const maxY = Math.max(...nodes.map(n => (n.y || 0) + 72), 520) + 40
 
+  if (error) {
+    return <div className="h-full flex items-center justify-center"><div className="text-center space-y-3"><WifiOff size={40} className="text-red-400 mx-auto" /><p className="text-sm text-shark-muted">{error}</p><button onClick={fetchGraph} className="text-xs text-shark-accent border border-shark-accent/30 px-3 py-1.5 rounded">重试</button></div></div>
+  }
+
   return (
     <div className="h-full flex flex-col">
       <header className="shrink-0 glass border-b border-shark-border flex items-center px-6 h-14 gap-3">
@@ -65,7 +97,7 @@ export default function TopologyPage() {
         <span className="text-xs text-shark-muted">Trace 链路 · {nodes.length} 节点 · {edges.length} 连接 · {traces.length} traces · 中间件 {middlewareCount} · 延迟边 {delayedEdges}</span>
         <div className="flex items-center gap-2 ml-2">
           <Search size={14} className="text-shark-muted" />
-          <input value={service} onChange={e => setService(e.target.value)} list="trace-service-options" placeholder="入口服务" className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white w-44" />
+          <input value={serviceDraft} onChange={e => setServiceDraft(e.target.value)} list="trace-service-options" placeholder="入口服务" className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white w-44" />
           <datalist id="trace-service-options">{serviceOptions.map(s => <option value={s} key={s} />)}</datalist>
           <select value={hours} onChange={e => setHours(Number(e.target.value))} className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white">
             <option value={1}>1小时</option><option value={6}>6小时</option><option value={24}>24小时</option><option value={72}>3天</option><option value={168}>7天</option>

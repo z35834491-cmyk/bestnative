@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import re
+import time
 from collections import defaultdict
 from statistics import mean
 from typing import Any
@@ -27,6 +30,12 @@ _DURATION_PATTERNS = [
     re.compile(r"(\d+(?:\.\d+)?)\s*毫秒", re.I),
 ]
 
+# 只取拓扑/时间线需要的字段，避免拉取整条日志（logMessage 可能非常大）
+_SOURCE_FIELDS = [
+    "timestamp", "@timestamp", "traceId", "spanId", "serviceName", "podName",
+    "podNodeName", "thread", "logLevel", "javaModule", "lineNum", "logMessage",
+]
+
 
 def _es_hosts() -> list[str]:
     if not settings.ES_HOST:
@@ -37,15 +46,32 @@ def _es_hosts() -> list[str]:
     return [f"https://{host}:{settings.ES_PORT}", f"http://{host}:{settings.ES_PORT}"]
 
 
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """复用一个常驻 httpx.AsyncClient，复用连接池，避免每次请求重建连接。"""
+    global _client
+    if _client is None or _client.is_closed:
+        auth = (settings.ES_USER, settings.ES_PASSWORD) if settings.ES_PASSWORD else None
+        # 连接超时短、读取超时长：ES 不可达时快速失败（不再卡 25s×2 主机），
+        # 但可达时慢查询仍能拿到结果（读超时 30s，不低于原先 25s）。
+        _client = httpx.AsyncClient(
+            verify=False,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            auth=auth,
+        )
+    return _client
+
+
 async def _search_trace_log(body: dict[str, Any]) -> dict[str, Any]:
     last_error = ""
-    auth = (settings.ES_USER, settings.ES_PASSWORD) if settings.ES_PASSWORD else None
+    client = _get_client()
     for host in _es_hosts():
         try:
-            async with httpx.AsyncClient(verify=False, timeout=25.0, auth=auth) as client:
-                resp = await client.post(f"{host}/{_TRACE_INDEX}/_search", json=body)
-                resp.raise_for_status()
-                return resp.json()
+            resp = await client.post(f"{host}/{_TRACE_INDEX}/_search", json=body)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as exc:  # noqa: BLE001
             last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
             logger.warning("trace_log.search.failed", host=host.split("://", 1)[0], error=last_error)
@@ -128,9 +154,39 @@ def _time_filter(hours: int) -> dict[str, Any]:
     return {"range": {"timestamp": {"gte": f"now-{safe_hours}h"}}}
 
 
+# ---- 轻量结果缓存（单实例部署；短 TTL，合并瞬时重复请求，避免击穿 ES） ----
+_cache: dict[str, tuple[float, Any]] = {}
+_cache_locks: dict[str, asyncio.Lock] = {}
+_TRACE_GRAPH_TTL = 20.0      # 秒
+_TRACE_TIMELINE_TTL = 30.0   # 秒
+
+
+async def _get_cached(key: str, ttl: float, factory) -> Any:
+    """带合并锁的短 TTL 缓存：并发相同请求只真正命中 ES 一次。"""
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit is not None and hit[0] > now:
+        return copy.deepcopy(hit[1])
+    lock = _cache_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        hit = _cache.get(key)
+        if hit is not None and hit[0] > now:
+            return copy.deepcopy(hit[1])
+        result = await factory()
+        _cache[key] = (time.monotonic() + ttl, result)
+        return copy.deepcopy(result)
+
+
 async def get_trace_timeline(trace_id: str, size: int = 500) -> dict[str, Any]:
+    safe_size = max(1, min(size, 2000))
+    return await _get_cached(f"tl:{trace_id}:{safe_size}", _TRACE_TIMELINE_TTL, lambda: _build_trace_timeline(trace_id, safe_size))
+
+
+async def _build_trace_timeline(trace_id: str, size: int) -> dict[str, Any]:
     body = {
-        "size": max(1, min(size, 2000)),
+        "size": size,
+        "track_total_hits": False,
+        "_source": _SOURCE_FIELDS,
         "sort": [{"timestamp": {"order": "asc", "unmapped_type": "date"}}],
         "query": {"bool": {"should": _term_or_match("traceId", trace_id), "minimum_should_match": 1}},
     }
@@ -175,14 +231,23 @@ def _add_node(nodes: dict[str, dict[str, Any]], node_id: str, name: str, node_ty
 
 
 async def get_trace_graph(service: str = "", hours: int = 1, trace_limit: int = 200, event_limit: int = 2000) -> dict[str, Any]:
+    safe_hours = max(1, min(hours, 168))
+    safe_trace_limit = max(1, min(trace_limit, 500))
+    safe_event_limit = max(1, min(event_limit, 5000))
+    key = f"tg:{service}:{safe_hours}:{safe_trace_limit}:{safe_event_limit}"
+    return await _get_cached(key, _TRACE_GRAPH_TTL, lambda: _build_trace_graph(service, safe_hours, safe_trace_limit, safe_event_limit))
+
+
+async def _build_trace_graph(service: str, hours: int, trace_limit: int, event_limit: int) -> dict[str, Any]:
     filters: list[dict[str, Any]] = [_time_filter(hours), {"exists": {"field": "traceId"}}, {"exists": {"field": "serviceName"}}]
     if service:
         filters.append({"bool": {"should": _term_or_match("serviceName", service), "minimum_should_match": 1}})
 
     trace_body = {
         "size": 0,
+        "track_total_hits": False,
         "query": {"bool": {"filter": filters}},
-        "aggs": {"traces": {"terms": {"field": "traceId.keyword", "size": max(1, min(trace_limit, 500)), "order": {"last_seen": "desc"}}, "aggs": {"last_seen": {"max": {"field": "timestamp"}}}}},
+        "aggs": {"traces": {"terms": {"field": "traceId.keyword", "size": trace_limit, "order": {"last_seen": "desc"}}, "aggs": {"last_seen": {"max": {"field": "timestamp"}}}}},
     }
     trace_resp = await _search_trace_log(trace_body)
     buckets = trace_resp.get("aggregations", {}).get("traces", {}).get("buckets", [])
@@ -191,7 +256,9 @@ async def get_trace_graph(service: str = "", hours: int = 1, trace_limit: int = 
         return {"nodes": [], "edges": [], "traces": [], "source": "es:trace_log", "hours": hours, "service": service}
 
     event_body = {
-        "size": max(1, min(event_limit, 5000)),
+        "size": event_limit,
+        "track_total_hits": False,
+        "_source": _SOURCE_FIELDS,
         "sort": [{"traceId.keyword": {"order": "asc"}}, {"timestamp": {"order": "asc", "unmapped_type": "date"}}],
         "query": {"bool": {"filter": [{"terms": {"traceId.keyword": trace_ids}}]}},
     }
@@ -259,14 +326,16 @@ async def get_trace_graph(service: str = "", hours: int = 1, trace_limit: int = 
                 edge["health"] = "degraded"
 
         # 业务服务之间没有 span duration 字段时，用目标服务 afterCompletion 耗时作为边延迟近似。
-        for idx, item in enumerate(items):
-            duration = item.get("durationMs")
-            if duration is None:
-                continue
+        # O(n)：记录"上一个与当前不同的服务"，等价于原先逐项回查，避免 trace 内 O(n²) 扫描。
+        current_svc = ""
+        prev_svc = ""
+        for item in items:
             svc = item["serviceName"] or "unknown"
-            previous = next((x["serviceName"] for x in reversed(items[:idx]) if x.get("serviceName") and x.get("serviceName") != svc), "")
-            if previous and (previous, svc) in edges:
-                edge_latencies[(previous, svc)].append(duration)
+            duration = item.get("durationMs")
+            if svc != current_svc:
+                prev_svc, current_svc = current_svc, svc
+            if duration is not None and prev_svc and prev_svc != svc and (prev_svc, svc) in edges:
+                edge_latencies[(prev_svc, svc)].append(duration)
 
         traces.append({
             "traceId": trace_id,
