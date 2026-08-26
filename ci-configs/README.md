@@ -21,7 +21,7 @@ ci-configs/
 ```
 业务项目 .gitlab-ci.yml:
   include:
-    - project: 'sre/bestnative'
+    - project: 'sre/shore'
       ref: main
       file: 'ci-configs/<project-name>/ci.yml'
 

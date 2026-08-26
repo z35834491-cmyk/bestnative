@@ -4,27 +4,29 @@
 # Prometheus / ES 复用现有基础设施，不在此 compose 中
 # ============================================================
 
+name: shore
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: bestnative-postgres
+    container_name: shore-postgres
     environment:
-      POSTGRES_USER: bestnative
-      POSTGRES_PASSWORD: bestnative
-      POSTGRES_DB: bestnative
+      POSTGRES_USER: shore
+      POSTGRES_PASSWORD: shore
+      POSTGRES_DB: shore
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bestnative"]
+      test: ["CMD-SHELL", "pg_isready -U shore"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    container_name: bestnative-redis
+    container_name: shore-redis
     command: redis-server --appendonly yes
     ports:
       - "6380:6379"
@@ -38,13 +40,13 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: bestnative-api
+    container_name: shore-api
     env_file:
       - ./backend/.env
       - ./backend/.env.secrets
     environment:
-      DATABASE_URL: postgresql+asyncpg://bestnative:bestnative@postgres:5432/bestnative
-      DATABASE_URL_SYNC: postgresql://bestnative:bestnative@postgres:5432/bestnative
+      DATABASE_URL: postgresql+asyncpg://shore:shore@postgres:5432/shore
+      DATABASE_URL_SYNC: postgresql://shore:shore@postgres:5432/shore
       REDIS_URL: redis://redis:6379/0
       KUBECONFIG: /tmp/kubeconfig
     ports:
@@ -65,7 +67,7 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         NEXT_PUBLIC_ENV: development
-    container_name: bestnative-frontend
+    container_name: shore-frontend
     environment:
       NEXT_PUBLIC_ENV: development
       INTERNAL_API_URL: http://api:8000

@@ -271,4 +271,4 @@ Ops Kit 合同  →  Shore 只读  →  Agent 推理  →  人确认  →  执�
 
 ## License
 
-MIT © [sharkchenshun](https://github.com/sharkchenshun)
+MIT © [sharkchenshun](https://github.com/sharkchenshun/shore)

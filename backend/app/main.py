@@ -22,7 +22,7 @@ logger = get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("bestnative.startup", environment=settings.ENVIRONMENT, version=settings.APP_VERSION)
+    logger.info("shore.startup", environment=settings.ENVIRONMENT, version=settings.APP_VERSION)
     if settings.is_production and settings.SECRET_KEY.startswith("dev-only"):
         logger.error("startup.insecure_secret_key")
         raise RuntimeError("生产环境必须设置 SECRET_KEY")
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
         from app.services.log_monitor.engine import monitor_engine
         monitor_engine.stop()
     stop_scheduler()
-    logger.info("bestnative.shutdown")
+    logger.info("shore.shutdown")
 
 
 app = FastAPI(

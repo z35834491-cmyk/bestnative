@@ -35,5 +35,5 @@ def setup_logging() -> None:
     )
 
 
-def get_logger(name: str = "bestnative") -> structlog.BoundLogger:
+def get_logger(name: str = "shore") -> structlog.BoundLogger:
     return structlog.get_logger(name)

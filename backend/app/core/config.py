@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ---- Database (PostgreSQL + pgvector) ----
-    DATABASE_URL: str = "postgresql+asyncpg://bestnative:bestnative@localhost:5432/bestnative"
-    DATABASE_URL_SYNC: str = "postgresql://bestnative:bestnative@localhost:5432/bestnative"
+    DATABASE_URL: str = "postgresql+asyncpg://shore:shore@localhost:5432/shore"
+    DATABASE_URL_SYNC: str = "postgresql://shore:shore@localhost:5432/shore"
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
 

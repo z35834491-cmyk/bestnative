@@ -1,7 +1,7 @@
 # CI/CD 迁移清单 — 业务项目 CI → Shore 集中管理
 
 > 目标：业务项目删掉 `.gitlab-ci.yml` 和 `Dockerfile`，仅保留一行 `include` 引用。
-> 实际 CI 逻辑全部托管在 `bestnative/ci-configs/` 下，由运维团队统一维护和优化。
+> 实际 CI 逻辑全部托管在 `shore/ci-configs/` 下，由运维团队统一维护和优化。
 
 ---
 
@@ -10,7 +10,7 @@
 ```
                          ┌─────────────────────┐
 dev push code ──────────→│  GitLab CI (thin)    │
-                         │  include: bestnative │
+                         │  include: shore │
                          └────────┬────────────┘
                                   │ 加载 ci-configs/<project>/ci.yml
                                   ▼
@@ -35,7 +35,7 @@ dev push code ──────────→│  GitLab CI (thin)    │
 
 | 权限项 | 说明 | 配置位置 |
 |:-------|:-----|:---------|
-| bestnative 仓库读取权限 | 业务项目的 CI runner 需要能通过 `include: project` 引用本仓库 CI 文件 | GitLab → `sre/bestnative` → Settings → CI/CD → Token Access → 允许 `sre/*` group 访问 |
+| shore 仓库读取权限 | 业务项目的 CI runner 需要能通过 `include: project` 引用本仓库 CI 文件 | GitLab → `sre/shore` → Settings → CI/CD → Token Access → 允许 `sre/*` group 访问 |
 | `GITLAB_API_TOKEN` | CI 中下载 maven settings 文件和 clone Helm 仓库用的 API Token | GitLab → Settings → Access Tokens → 创建 `api` + `read_repository` scope 的 token → 设为 Group CI Variable |
 | `GITLAB_URL` | GitLab 实例地址 | 设为 Group CI Variable |
 | `SLACK_URL` | Slack webhook URL | 已有，无需变更 |
@@ -74,7 +74,7 @@ dev push code ──────────→│  GitLab CI (thin)    │
 ### 4.1 复制配置到 Shore
 
 ```bash
-cd bestnative/ci-configs/
+cd shore/ci-configs/
 
 # 为每个项目创建目录（以 exchange-xxl-job 为例）
 mkdir -p exchange-xxl-job
@@ -94,7 +94,7 @@ cp ~/Desktop/cicd/exchange-xxl-job/Dockerfile exchange-xxl-job/
 # ci-configs/exchange-xxl-job/ci.yml
 ---
 include:
-  - project: 'sre/bestnative'
+  - project: 'sre/shore'
     ref: main
     file: 'ci-configs/templates/ci-common.yml'
 
@@ -250,7 +250,7 @@ exchange-xxl-job/
 
 ```yaml
 include:
-  - project: 'sre/bestnative'
+  - project: 'sre/shore'
     ref: main
     file: 'ci-configs/exchange-xxl-job/ci.yml'
 ```

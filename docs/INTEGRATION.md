@@ -30,7 +30,7 @@
 ### 操作
 
 ```bash
-cd bestnative
+cd shore
 cp backend/.env.example backend/.env
 # 编辑 backend/.env（最少配置见下面）
 docker compose up -d --build
@@ -219,9 +219,9 @@ curl -X POST http://localhost:8000/api/incidents/<any-incident-id>/diagnose
 
 ```yaml
 receivers:
-  - name: 'bestnative'
+  - name: 'shore'
     webhook_configs:
-      - url: 'http://bestnative:8000/api/incidents/alertmanager'
+      - url: 'http://api:8000/api/incidents/alertmanager'
         send_resolved: true
         http_config:
           headers:
@@ -391,7 +391,7 @@ python -m app.bootstrap
 uvicorn app.main:app --reload --port 8000
 
 # Terminal 3: 本地起前端（你已有的 dev server）
-cd bestnative && npm run dev   # → localhost:3456
+cd shore && npm run dev   # → localhost:3456
 ```
 
 ---
