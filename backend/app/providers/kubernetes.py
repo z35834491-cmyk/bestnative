@@ -42,16 +42,26 @@ class KubernetesProvider(InfrastructureProvider):
     provider_type = "kubernetes"
 
     def _load_client(self):
-        """延迟加载 k8s client。"""
+        """延迟加载 k8s client；优先使用已入库的 kubeconfig 内容。"""
         from kubernetes import client, config as k8s_config
+        import yaml
 
         in_cluster = self.config.get("in_cluster", False)
-        kubeconfig = self.config.get("kubeconfig") or None
+        kubeconfig_content = self.config.get("kubeconfig_content")
+        kubeconfig_path = self.config.get("kubeconfig") or None
         try:
             if in_cluster:
                 k8s_config.load_incluster_config()
+            elif kubeconfig_content:
+                cfg_dict = yaml.safe_load(kubeconfig_content)
+                if isinstance(cfg_dict, dict):
+                    k8s_config.load_kube_config_from_dict(cfg_dict)
+                else:
+                    raise ValueError("invalid kubeconfig content")
+            elif kubeconfig_path:
+                k8s_config.load_kube_config(config_file=kubeconfig_path)
             else:
-                k8s_config.load_kube_config(config_file=kubeconfig)
+                k8s_config.load_kube_config()
         except Exception as e:
             logger.error("k8s.config.load_failed", error=str(e))
             raise

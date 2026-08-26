@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.base import AgentConfig, BaseAgent
 from app.agents.react import run_react
 from app.core.config import settings
+from app.services.environments import get_active_profile
 from app.tools.registry import ToolTier
 
 SYSTEM_PROMPT = """你是 Shore 平台的运维助手。帮用户查服务状态、指标、日志、事件和知识库。
@@ -45,7 +46,8 @@ class CopilotAgent(BaseAgent):
                 "toolCalls": [],
             }
 
-        prompt = self.config.system_prompt.format(environment=settings.ENVIRONMENT)
+        profile = get_active_profile()
+        prompt = self.config.system_prompt.format(environment=f"{profile.label} ({profile.id})")
         result = await run_react(
             system_prompt=prompt,
             user_task=task,

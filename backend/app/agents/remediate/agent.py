@@ -15,6 +15,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.incident import AnalysisReport, Incident
 from app.providers.kubernetes import KubernetesProvider
+from app.services.environments import get_active_profile
+from app.services.kubeconfig_store import resolve_k8s_config_sync
 from app.services.agent_runs import finish_run, start_run
 
 logger = get_logger("agent.remediate")
@@ -96,11 +98,9 @@ class RemediateAgent(BaseAgent):
             pod = params.get("podName", "")
             if not pod:
                 return {"error": "缺少 podName"}
-            provider = KubernetesProvider(settings.CLUSTER_NAME, {
-                "in_cluster": settings.K8S_IN_CLUSTER,
-                "kubeconfig": settings.KUBECONFIG or None,
-                "context": settings.K8S_CONTEXT or None,
-            })
+            profile = get_active_profile()
+            cfg = resolve_k8s_config_sync(profile)
+            provider = KubernetesProvider(profile.cluster_name, cfg)
             ok = await provider.restart_pod(namespace=ns, pod_name=pod)
             return {"action": action_type, "success": ok, "pod": pod, "namespace": ns}
 

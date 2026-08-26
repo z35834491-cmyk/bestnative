@@ -3,16 +3,20 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
-  FileText, Loader2, Plus, RefreshCw, Search, Settings2, Trash2, WifiOff,
+  FileText, Loader2, Plus, RefreshCw, Search, Settings2, Trash2, WifiOff, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { apiJson } from '@/lib/api'
+import { useEnvironments } from '@/lib/useEnvironments'
 
-const API = ''
+const FILE_PAGE_SIZE = 30
+const CONTENT_PAGE_SIZE = 500
 
 interface MonitorTask {
   id: string
   name: string
   enabled: boolean
+  environment_id?: string
   k8s_namespace: string
   poll_interval_seconds: number
   alert_enabled: boolean
@@ -39,9 +43,10 @@ interface LogFile {
   is_virtual?: boolean
 }
 
-const emptyTask = (): Partial<MonitorTask> => ({
+const emptyTask = (envId = 'test'): Partial<MonitorTask> => ({
   name: 'New Monitor',
   enabled: false,
+  environment_id: envId,
   k8s_namespace: 'default',
   poll_interval_seconds: 60,
   alert_enabled: true,
@@ -92,29 +97,39 @@ export default function LogsPage() {
 
 function LogsPageContent() {
   const searchParams = useSearchParams()
+  const { active: activeEnv } = useEnvironments()
   const [tasks, setTasks] = useState<MonitorTask[]>([])
+  const [showAllEnvs, setShowAllEnvs] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<MonitorTask | null>(null)
   const [files, setFiles] = useState<LogFile[]>([])
   const [fileTotal, setFileTotal] = useState(0)
+  const [filePage, setFilePage] = useState(1)
   const [fileSearch, setFileSearch] = useState('')
   const [logType, setLogType] = useState<'all' | 'raw' | 'error'>('all')
   const [content, setContent] = useState('')
   const [contentLoading, setContentLoading] = useState(false)
+  const [contentPage, setContentPage] = useState(1)
+  const [contentTotal, setContentTotal] = useState(0)
+  const [contentWarning, setContentWarning] = useState<string | null>(null)
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
   const [showEditor, setShowEditor] = useState(false)
   const [draft, setDraft] = useState<Partial<MonitorTask>>(emptyTask())
   const [saving, setSaving] = useState(false)
 
+  const visibleTasks = useMemo(() => {
+    if (showAllEnvs) return tasks
+    const env = activeEnv || 'test'
+    return tasks.filter((t) => (t.environment_id || 'test') === env)
+  }, [tasks, activeEnv, showAllEnvs])
+
   const loadTasks = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API}/api/monitor/tasks`)
-      if (!res.ok) throw new Error('加载任务失败')
-      const data = await res.json()
+      const data = await apiJson<MonitorTask[]>('/api/monitor/tasks')
       setTasks(Array.isArray(data) ? data : [])
     } catch (e) {
       setError(e instanceof Error ? e.message : '无法连接 API')
@@ -123,44 +138,61 @@ function LogsPageContent() {
     }
   }, [])
 
-  const loadFiles = useCallback(async (task: MonitorTask, search = fileSearch) => {
+  const loadFiles = useCallback(async (task: MonitorTask, page = filePage, search = fileSearch) => {
     try {
       const params = new URLSearchParams({
         task_id: task.id,
-        page: '1',
-        page_size: '50',
+        page: String(page),
+        page_size: String(FILE_PAGE_SIZE),
         log_type: logType,
         realtime: 'true',
+        sort_by: 'mtime',
+        order: 'desc',
       })
       if (search) params.set('search', search)
-      const res = await fetch(`${API}/api/monitor/logs?${params}`)
-      const data = await res.json()
+      const data = await apiJson<{ files: LogFile[]; total: number }>(`/api/monitor/logs?${params}`)
       setFiles(data.files || [])
       setFileTotal(data.total || 0)
+      setFilePage(page)
     } catch {
       setFiles([])
       setFileTotal(0)
     }
-  }, [fileSearch, logType])
+  }, [fileSearch, logType, filePage])
 
-  const viewLog = useCallback(async (task: MonitorTask, filename: string, kw?: string) => {
+  const viewLog = useCallback(async (task: MonitorTask, filename: string, page = 1, kw?: string) => {
     setContentLoading(true)
     setActiveFile(filename)
+    setContentPage(page)
     try {
-      const params = new URLSearchParams({ task_id: task.id, filename })
+      const params = new URLSearchParams({
+        task_id: task.id,
+        filename,
+        page: String(page),
+        page_size: String(CONTENT_PAGE_SIZE),
+        reverse: 'true',
+      })
       if (kw) params.set('keyword', kw)
-      const res = await fetch(`${API}/api/monitor/logs/view?${params}`)
-      const data = await res.json()
+      const data = await apiJson<{
+        content?: string
+        error?: string
+        total?: number
+        warning?: string
+      }>(`/api/monitor/logs/view?${params}`)
       if (data.error) throw new Error(data.error)
       setContent(data.content || '')
+      setContentTotal(data.total || 0)
+      setContentWarning(data.warning || null)
     } catch (e) {
       setContent(e instanceof Error ? e.message : '读取失败')
+      setContentTotal(0)
+      setContentWarning(null)
     } finally {
       setContentLoading(false)
     }
   }, [])
 
-  useEffect(() => { loadTasks() }, [loadTasks])
+  useEffect(() => { loadTasks() }, [loadTasks, activeEnv])
 
   useEffect(() => {
     const taskId = searchParams.get('taskId')
@@ -169,8 +201,8 @@ function LogsPageContent() {
     const task = tasks.find((t) => t.id === taskId)
     if (!task) return
     setSelected(task)
-    loadFiles(task).then(() => {
-      if (filename) viewLog(task, filename)
+    loadFiles(task, 1).then(() => {
+      if (filename) viewLog(task, filename, 1)
     })
   }, [searchParams, tasks, loadFiles, viewLog])
 
@@ -178,11 +210,13 @@ function LogsPageContent() {
     setSelected(task)
     setContent('')
     setActiveFile(null)
-    await loadFiles(task)
+    setFilePage(1)
+    setContentPage(1)
+    await loadFiles(task, 1)
   }
 
   const openCreate = () => {
-    setDraft(emptyTask())
+    setDraft(emptyTask(activeEnv || 'test'))
     setShowEditor(true)
   }
 
@@ -202,15 +236,13 @@ function LogsPageContent() {
         record_only_keywords: textToLines(linesToText(draft.record_only_keywords as string[] | string)),
       }
       const isEdit = Boolean(draft.id)
-      const res = await fetch(
-        isEdit ? `${API}/api/monitor/tasks/${draft.id}` : `${API}/api/monitor/tasks`,
+      await apiJson(
+        isEdit ? `/api/monitor/tasks/${draft.id}` : '/api/monitor/tasks',
         {
           method: isEdit ? 'PUT' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         }
       )
-      if (!res.ok) throw new Error('保存失败')
       setShowEditor(false)
       await loadTasks()
     } catch (e) {
@@ -222,7 +254,7 @@ function LogsPageContent() {
 
   const deleteTask = async (task: MonitorTask) => {
     if (!confirm(`删除监控任务「${task.name}」？`)) return
-    await fetch(`${API}/api/monitor/tasks/${task.id}`, { method: 'DELETE' })
+    await apiJson(`/api/monitor/tasks/${task.id}`, { method: 'DELETE' })
     if (selected?.id === task.id) {
       setSelected(null)
       setFiles([])
@@ -231,10 +263,13 @@ function LogsPageContent() {
     await loadTasks()
   }
 
+  const contentTotalPages = Math.max(1, Math.ceil(contentTotal / CONTENT_PAGE_SIZE))
+  const fileTotalPages = Math.max(1, Math.ceil(fileTotal / FILE_PAGE_SIZE))
+
   const activeStats = useMemo(() => ({
-    enabled: tasks.filter((t) => t.enabled).length,
-    alerts: tasks.reduce((s, t) => s + (t.alerts_sent_count || 0), 0),
-  }), [tasks])
+    enabled: visibleTasks.filter((t) => t.enabled).length,
+    alerts: visibleTasks.reduce((s, t) => s + (t.alerts_sent_count || 0), 0),
+  }), [visibleTasks])
 
   if (loading) {
     return (
@@ -262,7 +297,13 @@ function LogsPageContent() {
         <h1 className="text-sm font-semibold text-white flex items-center gap-2">
           <FileText size={16} className="text-emerald-400" /> 日志告警
         </h1>
-        <span className="text-xs text-shark-muted">{tasks.length} 任务 · {activeStats.enabled} 启用 · {activeStats.alerts} 告警</span>
+        <span className="text-xs text-shark-muted">
+          {visibleTasks.length} 任务 · {activeStats.enabled} 启用 · 环境 {activeEnv || 'test'}
+        </span>
+        <label className="ml-2 text-[10px] text-shark-muted flex items-center gap-1 cursor-pointer">
+          <input type="checkbox" checked={showAllEnvs} onChange={(e) => setShowAllEnvs(e.target.checked)} />
+          显示全部环境
+        </label>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={openCreate} className="text-xs flex items-center gap-1 px-3 py-1.5 rounded bg-shark-accent/20 text-shark-accent border border-shark-accent/30 hover:bg-shark-accent/30">
             <Plus size={14} /> 新建任务
@@ -274,10 +315,11 @@ function LogsPageContent() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Task list */}
         <div className="w-[300px] border-r border-shark-border overflow-auto">
-          {tasks.length === 0 && <p className="text-xs text-shark-muted p-4">暂无监控任务，点击新建</p>}
-          {tasks.map((t) => (
+          {visibleTasks.length === 0 && (
+            <p className="text-xs text-shark-muted p-4">当前环境暂无任务{showAllEnvs ? '' : '，可勾选「显示全部环境」或新建'}</p>
+          )}
+          {visibleTasks.map((t) => (
             <div
               key={t.id}
               className={cn(
@@ -286,13 +328,16 @@ function LogsPageContent() {
               )}
               onClick={() => selectTask(t)}
             >
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center justify-between mb-1 gap-1">
                 <span className="text-sm font-medium text-white truncate">{t.name}</span>
-                <span className={cn('text-[10px] px-1.5 py-0.5 rounded', t.enabled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-shark-muted/20 text-shark-muted')}>
+                <span className={cn('text-[10px] px-1.5 py-0.5 rounded shrink-0', t.enabled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-shark-muted/20 text-shark-muted')}>
                   {t.enabled ? '启用' : '停用'}
                 </span>
               </div>
-              <p className="text-[10px] text-shark-muted mb-2">{t.k8s_namespace} · {t.poll_interval_seconds}s</p>
+              <p className="text-[10px] text-shark-muted mb-1">
+                <span className="text-shark-accent uppercase">{t.environment_id || 'test'}</span>
+                {' · '}{t.k8s_namespace} · {t.poll_interval_seconds}s
+              </p>
               {t.last_error && <p className="text-[10px] text-red-400 truncate">{t.last_error}</p>}
               <div className="flex gap-1 mt-2">
                 <button onClick={(e) => { e.stopPropagation(); openEdit(t) }} className="text-[10px] px-2 py-0.5 rounded border border-shark-border text-shark-muted hover:text-white">
@@ -306,24 +351,24 @@ function LogsPageContent() {
           ))}
         </div>
 
-        {/* Files + content */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {!selected ? (
-            <div className="flex-1 flex items-center justify-center text-shark-muted text-sm">选择左侧任务查看日志</div>
+            <div className="flex-1 flex items-center justify-center text-shark-muted text-sm">选择左侧任务查看日志（最新在前）</div>
           ) : (
             <>
               <div className="shrink-0 p-4 border-b border-shark-border space-y-3">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm text-white font-medium">{selected.name}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-shark-accent/20 text-shark-accent uppercase">{selected.environment_id || 'test'}</span>
                   <span className="text-[10px] text-shark-muted">上次运行 {fmtTime(selected.last_run)}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <div className="relative flex-1 max-w-xs">
                     <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-shark-muted" />
                     <input
                       value={fileSearch}
                       onChange={(e) => setFileSearch(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && loadFiles(selected, fileSearch)}
+                      onKeyDown={(e) => e.key === 'Enter' && loadFiles(selected, 1, fileSearch)}
                       placeholder="搜索文件名..."
                       className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg bg-shark-card border border-shark-border text-white"
                     />
@@ -337,7 +382,7 @@ function LogsPageContent() {
                     <option value="raw">原始</option>
                     <option value="error">错误</option>
                   </select>
-                  <button onClick={() => loadFiles(selected)} className="text-xs px-3 py-1.5 rounded border border-shark-border text-shark-muted hover:text-white">查询</button>
+                  <button onClick={() => loadFiles(selected, 1)} className="text-xs px-3 py-1.5 rounded border border-shark-border text-shark-muted hover:text-white">查询</button>
                   <input
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
@@ -345,37 +390,85 @@ function LogsPageContent() {
                     className="text-xs px-3 py-1.5 rounded-lg bg-shark-card border border-shark-border text-white w-36"
                   />
                   {activeFile && keyword && (
-                    <button onClick={() => viewLog(selected, activeFile, keyword)} className="text-xs px-3 py-1.5 rounded bg-shark-accent/20 text-shark-accent">搜索内容</button>
+                    <button onClick={() => viewLog(selected, activeFile, 1, keyword)} className="text-xs px-3 py-1.5 rounded bg-shark-accent/20 text-shark-accent">搜索内容</button>
                   )}
                   <span className="text-[10px] text-shark-muted ml-auto">{fileTotal} 个文件</span>
                 </div>
               </div>
 
               <div className="flex-1 flex overflow-hidden">
-                <div className="w-64 border-r border-shark-border overflow-auto">
-                  {files.length === 0 && <p className="text-xs text-shark-muted p-3">暂无日志文件</p>}
-                  {files.map((f) => (
-                    <button
-                      key={f.name}
-                      onClick={() => viewLog(selected, f.name)}
-                      className={cn(
-                        'w-full text-left px-3 py-2 border-b border-shark-border/50 hover:bg-white/[0.03]',
-                        activeFile === f.name && 'bg-shark-accent/10'
-                      )}
-                    >
-                      <p className="text-xs text-white truncate">{f.name}</p>
-                      <p className="text-[10px] text-shark-muted">{fmtSize(f.size)} · {fmtTime(f.mtime)}</p>
-                    </button>
-                  ))}
-                </div>
-                <div className="flex-1 overflow-auto p-4">
-                  {contentLoading ? (
-                    <Loader2 size={24} className="animate-spin text-shark-accent mx-auto mt-8" />
-                  ) : (
-                    <pre className="text-[11px] font-mono text-shark-text whitespace-pre-wrap leading-relaxed">
-                      {content || (activeFile ? '空文件' : '选择文件查看内容')}
-                    </pre>
+                <div className="w-64 border-r border-shark-border flex flex-col">
+                  <div className="flex-1 overflow-auto">
+                    {files.length === 0 && <p className="text-xs text-shark-muted p-3">暂无日志文件</p>}
+                    {files.map((f) => (
+                      <button
+                        key={f.name}
+                        onClick={() => viewLog(selected, f.name, 1)}
+                        className={cn(
+                          'w-full text-left px-3 py-2 border-b border-shark-border/50 hover:bg-white/[0.03]',
+                          activeFile === f.name && 'bg-shark-accent/10'
+                        )}
+                      >
+                        <p className="text-xs text-white truncate">{f.name}</p>
+                        <p className="text-[10px] text-shark-muted">{fmtSize(f.size)} · {fmtTime(f.mtime)}</p>
+                      </button>
+                    ))}
+                  </div>
+                  {fileTotalPages > 1 && (
+                    <div className="shrink-0 flex items-center justify-between px-2 py-2 border-t border-shark-border text-[10px] text-shark-muted">
+                      <button
+                        disabled={filePage <= 1}
+                        onClick={() => loadFiles(selected, filePage - 1)}
+                        className="p-1 disabled:opacity-30 hover:text-white"
+                      >
+                        <ChevronLeft size={14} />
+                      </button>
+                      <span>{filePage}/{fileTotalPages}</span>
+                      <button
+                        disabled={filePage >= fileTotalPages}
+                        onClick={() => loadFiles(selected, filePage + 1)}
+                        className="p-1 disabled:opacity-30 hover:text-white"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
                   )}
+                </div>
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-shark-border/50 text-[10px] text-shark-muted">
+                    <span>{activeFile ? `${activeFile} · 倒序 · 共 ${contentTotal} 行` : '选择文件'}</span>
+                    {activeFile && contentTotalPages > 1 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          disabled={contentPage <= 1 || contentLoading}
+                          onClick={() => selected && activeFile && viewLog(selected, activeFile, contentPage - 1, keyword || undefined)}
+                          className="p-1 disabled:opacity-30 hover:text-white"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <span>第 {contentPage}/{contentTotalPages} 页</span>
+                        <button
+                          disabled={contentPage >= contentTotalPages || contentLoading}
+                          onClick={() => selected && activeFile && viewLog(selected, activeFile, contentPage + 1, keyword || undefined)}
+                          className="p-1 disabled:opacity-30 hover:text-white"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {contentWarning && (
+                    <p className="shrink-0 px-4 py-1 text-[10px] text-amber-400 bg-amber-500/10">{contentWarning}</p>
+                  )}
+                  <div className="flex-1 overflow-auto p-4">
+                    {contentLoading ? (
+                      <Loader2 size={24} className="animate-spin text-shark-accent mx-auto mt-8" />
+                    ) : (
+                      <pre className="text-[11px] font-mono text-shark-text whitespace-pre-wrap leading-relaxed">
+                        {content || (activeFile ? '空文件' : '选择文件查看内容（最新日志在前）')}
+                      </pre>
+                    )}
+                  </div>
                 </div>
               </div>
             </>
@@ -383,12 +476,17 @@ function LogsPageContent() {
         </div>
       </div>
 
-      {/* Task editor modal */}
       {showEditor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="glass rounded-xl w-full max-w-lg max-h-[85vh] overflow-auto p-5 space-y-4">
             <h2 className="text-sm font-semibold text-white">{draft.id ? '编辑任务' : '新建监控任务'}</h2>
             <Field label="名称"><input value={draft.name || ''} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className="input-field" /></Field>
+            <Field label="环境">
+              <select value={draft.environment_id || 'test'} onChange={(e) => setDraft({ ...draft, environment_id: e.target.value })} className="input-field">
+                <option value="dev">dev（K8s context: dev）</option>
+                <option value="test">test（K8s context: test）</option>
+              </select>
+            </Field>
             <Field label="K8s 命名空间（逗号分隔）"><input value={draft.k8s_namespace || ''} onChange={(e) => setDraft({ ...draft, k8s_namespace: e.target.value })} className="input-field" /></Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="轮询间隔(秒)"><input type="number" value={draft.poll_interval_seconds || 60} onChange={(e) => setDraft({ ...draft, poll_interval_seconds: +e.target.value })} className="input-field" /></Field>

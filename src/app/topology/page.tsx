@@ -6,20 +6,11 @@ import { cn, healthDot } from '@/lib/utils'
 import { layoutNodes } from '@/lib/topology-layout'
 import type { TopoEdge, TopoNode, TraceGraph, TraceSummary, TraceTimeline } from '@/lib/types'
 
-const API = ''
-
-// 安全读取 API 错误信息：后端 5xx 可能返回纯文本（如 "Internal Server Error"），
-// 直接 res.json() 会抛 "Unexpected token" 异常，这里统一转成可读文案。
-async function readApiError(res: Response): Promise<string> {
-  try {
-    const data = await res.json()
-    return data.detail || data.error || `请求失败 (HTTP ${res.status})`
-  } catch {
-    return `请求失败 (HTTP ${res.status})`
-  }
-}
+import { apiFetch, readApiError } from '@/lib/api'
+import { useEnvironments } from '@/lib/useEnvironments'
 
 export default function TopologyPage() {
+  const { active: activeEnv } = useEnvironments()
   const [graph, setGraph] = useState<TraceGraph | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -65,7 +56,7 @@ export default function TopologyPage() {
         params.set('trace_limit', '80')
         params.set('events_per_trace', '50')
       }
-      const res = await fetch(`${API}/api/topology/trace-graph?${params}`, { signal: controller.signal })
+      const res = await apiFetch(`/api/topology/trace-graph?${params}`, { signal: controller.signal })
       if (!res.ok) throw new Error(await readApiError(res))
       const data = await res.json()
       setGraph(data)
@@ -81,7 +72,7 @@ export default function TopologyPage() {
     } finally {
       if (abortRef.current === controller) setLoading(false)
     }
-  }, [service, hours, traceIdQuery])
+  }, [service, hours, traceIdQuery, activeEnv])
 
   useEffect(() => { fetchGraph() }, [fetchGraph])
 
@@ -91,7 +82,10 @@ export default function TopologyPage() {
     timelineAbortRef.current = controller
     setTimelineLoading(true)
     try {
-      const res = await fetch(`${API}/api/topology/traces/${encodeURIComponent(traceId)}?size=150&offset=${offset}`, { signal: controller.signal })
+      const res = await apiFetch(
+        `/api/topology/traces/${encodeURIComponent(traceId)}?size=150&offset=${offset}`,
+        { signal: controller.signal },
+      )
       if (!res.ok) throw new Error(await readApiError(res))
       const data = await res.json()
       setTimeline(prev => {

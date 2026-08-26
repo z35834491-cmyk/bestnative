@@ -16,3 +16,6 @@ class DiscoverRequest(BaseModel):
 class TopologyGraph(BaseModel):
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
+    environment: str | None = None
+    clusterName: str | None = None
+    discoveryPending: bool = False

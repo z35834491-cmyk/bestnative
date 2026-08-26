@@ -1,0 +1,29 @@
+{
+  "default": "test",
+  "environments": [
+    {
+      "id": "dev",
+      "label": "Dev",
+      "cluster_name": "dev",
+      "prometheus_url": "",
+      "prometheus_ssl_verify": false,
+      "prometheus_username": "",
+      "es_host": "",
+      "es_port": 9200,
+      "gitlab_ci_branches": ["dev"],
+      "argocd_server": "argocd.dev.exc888.org"
+    },
+    {
+      "id": "test",
+      "label": "Test",
+      "cluster_name": "test",
+      "prometheus_url": "https://prometheus.example.com",
+      "prometheus_ssl_verify": false,
+      "prometheus_username": "",
+      "es_host": "",
+      "es_port": 9200,
+      "gitlab_ci_branches": ["test", "main"],
+      "argocd_server": "argocd.test.exc888.org"
+    }
+  ]
+}

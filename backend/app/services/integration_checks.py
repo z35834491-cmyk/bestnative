@@ -13,10 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.services.environments import EnvironmentProfile, get_active_profile
 from app.services.prometheus import PrometheusClient
 
 _CHECK_TIMEOUT = 6.0
-_cache: tuple[float, dict[str, Any]] | None = None
+_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_TTL = 45.0
 
 
@@ -28,12 +29,12 @@ async def _check_database(db: AsyncSession) -> dict[str, Any]:
         return {"status": "error", "detail": str(exc)[:100]}
 
 
-async def _check_prometheus() -> dict[str, Any]:
-    url = (settings.PROMETHEUS_URL or "").strip()
+async def _check_prometheus(profile: EnvironmentProfile) -> dict[str, Any]:
+    url = (profile.prometheus_url or settings.PROMETHEUS_URL or "").strip()
     if not url:
         return {"status": "not_configured", "url": ""}
 
-    prom = PrometheusClient()
+    prom = PrometheusClient(profile=profile)
     try:
         ok, detail = await asyncio.wait_for(prom.probe(), timeout=_CHECK_TIMEOUT)
         if ok:
@@ -45,24 +46,28 @@ async def _check_prometheus() -> dict[str, Any]:
         return {"status": "error", "url": url, "detail": "探测超时"}
 
 
-async def _check_elasticsearch() -> dict[str, Any]:
-    if not settings.ES_HOST:
+async def _check_elasticsearch(profile: EnvironmentProfile) -> dict[str, Any]:
+    host = (profile.es_host or settings.ES_HOST or "").strip()
+    if not host:
         return {"status": "not_configured"}
     try:
         from app.services.trace_topology import _es_hosts, _get_client
         client = _get_client()
-        host = _es_hosts()[0]
+        hosts = _es_hosts(profile)
+        if not hosts:
+            return {"status": "not_configured"}
+        host_url = hosts[0]
 
         async def _ping() -> int:
-            resp = await client.get(f"{host}/_cluster/health")
+            resp = await client.get(f"{host_url}/_cluster/health")
             return resp.status_code
 
         code = await asyncio.wait_for(_ping(), timeout=_CHECK_TIMEOUT)
-        return {"status": "ok" if code == 200 else "error", "host": settings.ES_HOST}
+        return {"status": "ok" if code == 200 else "error", "host": host}
     except asyncio.TimeoutError:
-        return {"status": "error", "host": settings.ES_HOST, "detail": "连接超时"}
+        return {"status": "error", "host": host, "detail": "连接超时"}
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "host": settings.ES_HOST, "detail": str(exc)[:80]}
+        return {"status": "error", "host": host, "detail": str(exc)[:80]}
 
 
 async def _check_redis() -> dict[str, Any]:
@@ -132,11 +137,12 @@ async def _check_argocd() -> dict[str, Any]:
     return out
 
 
-async def run_integration_checks(db: AsyncSession) -> dict[str, Any]:
+async def run_integration_checks(db: AsyncSession, profile: EnvironmentProfile | None = None) -> dict[str, Any]:
+    profile = profile or get_active_profile()
     db_r, prom_r, es_r, redis_r, gitlab_r, argocd_r = await asyncio.gather(
         _check_database(db),
-        _check_prometheus(),
-        _check_elasticsearch(),
+        _check_prometheus(profile),
+        _check_elasticsearch(profile),
         _check_redis(),
         _check_gitlab(),
         _check_argocd(),
@@ -157,15 +163,21 @@ async def run_integration_checks(db: AsyncSession) -> dict[str, Any]:
             "webhook": "/api/incidents/alertmanager",
             "token_required": bool(settings.ALERTMANAGER_WEBHOOK_TOKEN),
         },
-        "environment": settings.ENVIRONMENT,
+        "environment": profile.id,
     }
 
 
-async def get_integration_checks(db: AsyncSession, *, refresh: bool = False) -> dict[str, Any]:
-    global _cache
+async def get_integration_checks(
+    db: AsyncSession,
+    *,
+    refresh: bool = False,
+    profile: EnvironmentProfile | None = None,
+) -> dict[str, Any]:
+    profile = profile or get_active_profile()
     now = time.time()
-    if not refresh and _cache and now - _cache[0] < _CACHE_TTL:
-        return _cache[1]
-    result = await run_integration_checks(db)
-    _cache = (now, result)
+    cached = _cache.get(profile.id)
+    if not refresh and cached and now - cached[0] < _CACHE_TTL:
+        return cached[1]
+    result = await run_integration_checks(db, profile)
+    _cache[profile.id] = (now, result)
     return result

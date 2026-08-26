@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Boxes, ChevronDown, ChevronRight, Loader2, RotateCw, Terminal, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiFetch, apiJson, readApiError } from '@/lib/api'
+import { useEnvironments } from '@/lib/useEnvironments'
 import { ErrorState, LoadingSpinner } from '@/components/ui/AsyncState'
 import type { TopoNode, TopologyGraph } from '@/lib/types'
 
@@ -20,6 +21,7 @@ interface PodInfo {
 }
 
 export default function PodsPage() {
+  const { active: activeEnv } = useEnvironments()
   const [topology, setTopology] = useState<TopologyGraph | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,7 +48,11 @@ export default function PodsPage() {
     }
   }, [])
 
-  useEffect(() => { fetchTopology() }, [fetchTopology])
+  useEffect(() => {
+    setExpandedMap({})
+    setPodCounts({})
+    fetchTopology()
+  }, [fetchTopology, activeEnv])
 
   const toggleExpand = async (svc: TopoNode) => {
     if (expandedMap[svc.id]) {

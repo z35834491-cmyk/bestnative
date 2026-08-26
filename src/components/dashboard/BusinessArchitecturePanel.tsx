@@ -25,6 +25,7 @@ export interface ArchLayer {
 export interface HomeOverview {
   environment: string
   clusterName: string
+  discoveryPending?: boolean
   stats: {
     services: number
     middlewares: number

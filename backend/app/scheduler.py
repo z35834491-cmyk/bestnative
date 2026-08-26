@@ -13,19 +13,35 @@ _scheduler = None
 
 
 async def _periodic_discovery():
-    """周期自动发现（K8s）。无 kubeconfig 时静默跳过。"""
-    if not (settings.KUBECONFIG or settings.K8S_IN_CLUSTER):
-        return
+    """周期自动发现（K8s）。kubeconfig 已入库后逐个环境发现。"""
     from app.engine.discovery import DiscoveryEngine
+    from app.services.environments import list_profiles
+    from app.services.kubeconfig_store import resolve_k8s_config
+
+    profiles = list_profiles()
+    if not profiles:
+        return
     async with AsyncSessionLocal() as db:
+        runnable = []
+        for profile in profiles:
+            cfg = await resolve_k8s_config(db, profile)
+            if cfg.get("kubeconfig_content") or cfg.get("in_cluster"):
+                runnable.append((profile, cfg))
+        if not runnable:
+            return
+        for profile, cfg in runnable:
+            try:
+                await DiscoveryEngine(db).run(
+                    "kubernetes",
+                    profile.cluster_name,
+                    cfg,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("scheduler.discovery.failed", env=profile.id, error=str(e))
         try:
-            await DiscoveryEngine(db).run(
-                "kubernetes", settings.CLUSTER_NAME,
-                {"in_cluster": settings.K8S_IN_CLUSTER, "kubeconfig": settings.KUBECONFIG or None, "context": settings.K8S_CONTEXT or None},
-            )
             await db.commit()
         except Exception as e:  # noqa: BLE001
-            logger.warning("scheduler.discovery.failed", error=str(e))
+            logger.warning("scheduler.discovery.commit.failed", error=str(e))
 
 
 async def _full_platform_scan():

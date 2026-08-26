@@ -12,7 +12,7 @@
 
 | 变量 | 必填 | 说明 |
 |------|:----:|------|
-| `ENVIRONMENT` | 建议 | `development` / `test` / `prod` / `futures`，前端左上角展示 |
+| `ENVIRONMENT` | 建议 | `dev` / `test` / `prod` / `futures` / `development`，前端左上角展示 |
 | `DEBUG` | 否 | 开发调试用 |
 | `LOG_LEVEL` | 否 | `INFO` / `DEBUG` |
 | `SECRET_KEY` | 生产必填 | JWT 签名，至少 32 字符随机串 |
@@ -233,6 +233,61 @@ environment:
 ```
 
 与后端 `ENVIRONMENT` 保持一致即可。
+
+---
+
+## 12. 多环境配置
+
+一套 Shore 可管理 **多个环境**（dev / test / prod），配置文件：
+
+`backend/config/environments.json`（参考 `environments.example.json`）
+
+```json
+{
+  "default": "test",
+  "environments": [
+    {
+      "id": "dev",
+      "label": "Dev",
+      "cluster_name": "dev",
+      "k8s_context": "dev",
+      "prometheus_url": "https://prometheus.dev.example.com",
+      "prometheus_username": "prometheus",
+      "es_host": "192.168.1.10",
+      "gitlab_ci_branches": ["dev"],
+      "argocd_server": "argocd.dev.example.com"
+    },
+    {
+      "id": "test",
+      "label": "Test",
+      "cluster_name": "test",
+      "k8s_context": "test",
+      "prometheus_url": "https://prometheus.test.example.com",
+      "es_host": "192.168.1.11",
+      "gitlab_ci_branches": ["test", "main"],
+      "argocd_server": "argocd.test.example.com"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `default` | 首次进入 / 未切换时的默认环境 id |
+| `id` | 环境标识，UI 切换与 API 请求头 `X-Shore-Environment` |
+| `cluster_name` | K8s 发现写入的 Cluster 名，拓扑/首页按此过滤 |
+| `k8s_context` | kubeconfig 中的 context |
+| `prometheus_url` / `es_host` | 该环境的观测数据源 |
+| `gitlab_ci_branches` | 可选，标记该环境关注的 CI 分支 |
+| `argocd_server` | 文档用途；回滚仍按 Git **分支** 选 ArgoCD |
+
+**密码**（Prometheus / ES）仍用全局 `backend/.env.secrets`，各环境共用。
+
+**切换环境：** 侧边栏下拉，或 `PUT /api/settings/environments/active` `{"id":"dev"}`。当前环境持久化在 Redis。
+
+**发现任务：** 定时任务会对 JSON 里 **每个 enabled 环境** 各跑一遍 K8s Discovery（不同 context → 不同 cluster 入库）。
+
+无 `environments.json` 时自动回退为 `.env` 单环境模式。
 
 ---
 

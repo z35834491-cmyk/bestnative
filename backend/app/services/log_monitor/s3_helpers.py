@@ -103,6 +103,7 @@ def redact_task(task: MonitorTask) -> dict[str, Any]:
         "name": task.name,
         "enabled": task.enabled,
         "k8s_namespace": task.k8s_namespace,
+        "environment_id": getattr(task, "environment_id", None) or "test",
         "k8s_kubeconfig": "",
         "k8s_kubeconfig_set": bool(task.k8s_kubeconfig),
         "s3_archive_enabled": task.s3_archive_enabled,

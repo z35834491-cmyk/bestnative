@@ -17,13 +17,20 @@ def _mw_node_id(mw_type: str) -> str:
     return f"middleware:{mw_type}"
 
 
-async def enrich_trace_graph_with_discovery(db: AsyncSession, graph: dict[str, Any]) -> dict[str, Any]:
+async def enrich_trace_graph_with_discovery(
+    db: AsyncSession,
+    graph: dict[str, Any],
+    cluster_id: str | None = None,
+) -> dict[str, Any]:
     """把 DB 中 K8s/桥接发现的中间件与依赖边补进 Trace 图（Trace 未命中时仍可见 MySQL/Redis 等）。"""
     middlewares = (await db.execute(select(Middleware))).scalars().all()
-    if not middlewares:
+    if not middlewares and not cluster_id:
         return graph
 
-    services = (await db.execute(select(Service))).scalars().all()
+    svc_q = select(Service)
+    if cluster_id:
+        svc_q = svc_q.where(Service.cluster_id == cluster_id)
+    services = (await db.execute(svc_q)).scalars().all()
     deps = (await db.execute(select(ServiceDependency))).scalars().all()
     svc_by_id = {str(s.id): s for s in services}
     mw_by_id = {str(m.id): m for m in middlewares}

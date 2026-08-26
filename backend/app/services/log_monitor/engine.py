@@ -471,28 +471,43 @@ class MonitorEngine:
         # 2. Rotate & Archive
         self._rotate_and_archive(task)
 
+    def _kubeconfig_content_for_task(self, task) -> str | None:
+        env_id = getattr(task, "environment_id", None) or "test"
+        try:
+            from app.services.environments import get_profile
+            from app.services.kubeconfig_store import get_cluster_kubeconfig_sync, materialize_kubeconfig_yaml
+            profile = get_profile(env_id)
+            if profile:
+                content = get_cluster_kubeconfig_sync(profile.cluster_name)
+                if content:
+                    return content
+                return materialize_kubeconfig_yaml(profile)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("k8s.kubeconfig.resolve.failed", env=env_id, error=str(exc)[:80])
+        return None
+
     def _get_k8s_client(self, task):
         if not client:
             raise ImportError("kubernetes package not installed")
 
-        ctx = app_settings.K8S_CONTEXT or None
-
         if task.k8s_kubeconfig:
             import tempfile
+            import yaml
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tf:
                 tf.write(task.k8s_kubeconfig)
                 tf.flush()
-                k8s_config.load_kube_config(config_file=tf.name, context=ctx)
+                k8s_config.load_kube_config(config_file=tf.name)
                 os.unlink(tf.name)
         else:
             try:
                 k8s_config.load_incluster_config()
             except Exception:
-                kubeconfig = app_settings.KUBECONFIG or None
-                if kubeconfig:
-                    k8s_config.load_kube_config(config_file=kubeconfig, context=ctx)
+                content = self._kubeconfig_content_for_task(task)
+                if content:
+                    import yaml
+                    k8s_config.load_kube_config_from_dict(yaml.safe_load(content))
                 else:
-                    k8s_config.load_kube_config(context=ctx)
+                    k8s_config.load_kube_config()
 
         return client.CoreV1Api()
 
@@ -635,8 +650,12 @@ class MonitorEngine:
         
         raw_buffer = []
         error_output = []
-        
-        # --- Severity Filter (SHARK_AIOPS_LOG_SEVERITY) ---
+        stream_line_count = 0
+        raw_byte_count = 0
+        max_lines = app_settings.LOG_MONITOR_MAX_LINES_PER_POLL
+        max_raw_bytes = app_settings.LOG_MONITOR_MAX_RAW_BYTES
+        max_alerts = app_settings.LOG_MONITOR_MAX_ALERTS_PER_BATCH
+        stream_truncated = False
         severity = os.environ.get("SHARK_AIOPS_LOG_SEVERITY", "all").strip().lower()
         SEVERITY_ORDER = {'DEBUG': 0, 'TRACE': 0, 'INFO': 10, 'WARN': 20, 'ERROR': 30, 'FATAL': 40}
         _severity_min_level = 0
@@ -822,6 +841,10 @@ class MonitorEngine:
             for line_bytes in stream:
                 if not line_bytes:
                     continue
+                stream_line_count += 1
+                if stream_line_count > max_lines:
+                    stream_truncated = True
+                    break
                     
                 # Decode bytes to string
                 line_raw = line_bytes.decode('utf-8', errors='replace')
@@ -842,7 +865,12 @@ class MonitorEngine:
                 
                 # Write to raw log
                 if write_raw_s3:
-                    raw_buffer.append(line)
+                    line_bytes_len = len(line.encode("utf-8", errors="replace"))
+                    if raw_byte_count + line_bytes_len <= max_raw_bytes:
+                        raw_buffer.append(line)
+                        raw_byte_count += line_bytes_len
+                    elif not stream_truncated:
+                        stream_truncated = True
                 
                 if write_raw_local and log_file_handle:
                     log_file_handle.write(line)
@@ -1066,6 +1094,14 @@ class MonitorEngine:
                     pass
 
         if alerts:
+            if len(alerts) > max_alerts:
+                dropped = len(alerts) - max_alerts
+                alerts = alerts[:max_alerts]
+                alerts.append({
+                    "type": "SYSTEM",
+                    "keyword": "rate_limit",
+                    "msg": f"[SYSTEM] 告警过多已截断，丢弃 {dropped} 条",
+                })
             error_ref = uploaded_error_key or os.path.basename(error_file_path)
             self._send_slack_alert(
                 alerts, task, source_name, log_dir, error_ref,
@@ -1077,15 +1113,17 @@ class MonitorEngine:
             )
 
         self._write_scan_postprocess(
-            source_name, log_dir, count_error, count_warn, count_info, count_other, alerts, error_lines
+            source_name, log_dir, count_error, count_warn, count_info, count_other, alerts, error_lines,
+            truncated=stream_truncated,
         )
 
-    def _write_scan_postprocess(self, source_name, log_dir, count_error, count_warn, count_info, count_other, alerts, error_lines):
+    def _write_scan_postprocess(self, source_name, log_dir, count_error, count_warn, count_info, count_other, alerts, error_lines, truncated=False):
         scan_history_path = os.path.join(log_dir, "scan_history.log")
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        trunc_note = " truncated=1" if truncated else ""
         log_entry = (
             f"[{timestamp}] [monitor] Pod: {source_name} | "
-            f"counts error={count_error} warn={count_warn} info={count_info} other={count_other} alerts={len(alerts)}\n"
+            f"counts error={count_error} warn={count_warn} info={count_info} other={count_other} alerts={len(alerts)}{trunc_note}\n"
         )
         try:
             with open(scan_history_path, "a", encoding="utf-8") as f:

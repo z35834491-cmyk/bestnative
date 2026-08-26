@@ -59,6 +59,9 @@ export interface TopoEdge {
 export interface TopologyGraph {
   nodes: TopoNode[]
   edges?: TopoEdge[]
+  environment?: string
+  clusterName?: string
+  discoveryPending?: boolean
 }
 
 export interface TraceSummary {

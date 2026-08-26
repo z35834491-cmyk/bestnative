@@ -11,15 +11,15 @@ services:
     image: pgvector/pgvector:pg16
     container_name: shore-postgres
     environment:
-      POSTGRES_USER: shore
-      POSTGRES_PASSWORD: shore
-      POSTGRES_DB: shore
+      POSTGRES_USER: bestnative
+      POSTGRES_PASSWORD: bestnative
+      POSTGRES_DB: bestnative
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shore"]
+      test: ["CMD-SHELL", "pg_isready -U bestnative"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -45,20 +45,21 @@ services:
       - ./backend/.env
       - ./backend/.env.secrets
     environment:
-      DATABASE_URL: postgresql+asyncpg://shore:shore@postgres:5432/shore
-      DATABASE_URL_SYNC: postgresql://shore:shore@postgres:5432/shore
+      DATABASE_URL: postgresql+asyncpg://bestnative:bestnative@postgres:5432/bestnative
+      DATABASE_URL_SYNC: postgresql://bestnative:bestnative@postgres:5432/bestnative
       REDIS_URL: redis://redis:6379/0
       KUBECONFIG: /tmp/kubeconfig
     ports:
       - "8000:8000"
     volumes:
-      - ${KUBECONFIG:-~/.kube/config}:/tmp/kubeconfig.orig:ro
+      - ${KUBECONFIG:-~/.kube/config}:/tmp/kubeconfig:ro
+      - ./backend/config/environments.json:/app/config/environments.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # 复制 kubeconfig + 设 context + 建表 + 启动
+    # 挂载 KUBECONFIG + 建表 + 启动时同步 kubeconfig 入库
     command: ["/app/entrypoint.sh"]
 
   frontend:
@@ -79,3 +80,5 @@ services:
 
 volumes:
   pgdata:
+    external: true
+    name: bestnative_pgdata

@@ -5,12 +5,14 @@ import Link from 'next/link'
 import { AlertTriangle, DollarSign, Layers, Rocket, Server } from 'lucide-react'
 import { apiJson } from '@/lib/api'
 import { ErrorState, LoadingSpinner } from '@/components/ui/AsyncState'
+import { useEnvironments } from '@/lib/useEnvironments'
 import BusinessArchitecturePanel, {
   IncidentsSidebar,
   type HomeOverview,
 } from '@/components/dashboard/BusinessArchitecturePanel'
 
 export default function DashboardPage() {
+  const { active: activeEnv } = useEnvironments()
   const [data, setData] = useState<HomeOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -27,7 +29,7 @@ export default function DashboardPage() {
     }
   }, [])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { fetchData() }, [fetchData, activeEnv])
 
   if (loading) return <LoadingSpinner />
   if (error || !data) return <ErrorState message={error || '无数据'} onRetry={fetchData} />
@@ -42,6 +44,9 @@ export default function DashboardPage() {
         <span className="text-[10px] text-shark-muted bg-shark-accent/10 border border-shark-accent/20 px-2 py-0.5 rounded">
           {data.environment} · {data.clusterName}
         </span>
+        {data.discoveryPending && (
+          <span className="text-[10px] text-amber-400">正在发现 {data.clusterName} 集群…</span>
+        )}
         <button onClick={fetchData} className="ml-auto text-xs text-shark-muted hover:text-white">刷新</button>
       </header>
 

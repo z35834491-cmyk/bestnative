@@ -1,6 +1,7 @@
 # ============================================================
 # app/core/config.py — 全局配置（pydantic-settings）
-# 单环境部署：每个环境独立部署一个实例，ENVIRONMENT 由部署时注入
+# 单实例多环境：backend/config/environments.json 定义 dev/test/prod 等；
+# 当前环境存 Redis，UI 可切换。无 JSON 时回退 .env 单环境。
 # ============================================================
 
 from functools import lru_cache
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "Shore"
     APP_VERSION: str = "0.1.0"
     # 当前实例所属环境（部署时注入，用于展示与资源发现范围）
-    ENVIRONMENT: Literal["test", "prod", "futures", "development"] = "development"
+    ENVIRONMENT: Literal["dev", "test", "prod", "futures", "development"] = "development"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
@@ -76,9 +77,8 @@ class Settings(BaseSettings):
     AUTO_DIAGNOSE_ON_ALERT: bool = True
 
     # ---- Infra Discovery ----
-    KUBECONFIG: str = ""            # 空则用集群内 ServiceAccount / 默认 ~/.kube/config
+    KUBECONFIG: str = ""            # 标准 K8s 凭证路径；启动时解析入库，运行时从 DB 读取
     K8S_IN_CLUSTER: bool = False    # 部署到 K8s 内时设为 True
-    K8S_CONTEXT: str = ""           # kubeconfig context，如 "test"；空则用 current-context
     CLUSTER_NAME: str = "default"   # 集群名称（前端展示用；配置为本环境实际名称）
     DISCOVERY_INTERVAL: int = 300   # 自动发现周期（秒）
 
@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     # ---- Log Monitor (合并自 shark-Platform) ----
     LOG_MONITOR_ENABLED: bool = True
     LOG_MONITOR_DIR: str = ""          # 空则使用 backend/logs/monitor_logs
+    LOG_MONITOR_MAX_LINES_PER_POLL: int = 8000   # 单 Pod 单次轮询最大行数
+    LOG_MONITOR_MAX_RAW_BYTES: int = 2 * 1024 * 1024  # 单 Pod 单次 raw 缓冲上限（字节）
+    LOG_MONITOR_MAX_ALERTS_PER_BATCH: int = 30   # 单次流处理最大告警数
+    LOG_MONITOR_VIEW_PAGE_SIZE: int = 500        # API 默认分页行数
+    LOG_MONITOR_VIEW_MAX_PAGE_SIZE: int = 2000   # API 单页最大行数
     PUBLIC_URL: str = "http://localhost:3456"  # Slack 告警 deep link
 
     # ---- Ops Agents ----

@@ -14,6 +14,7 @@ class MonitorTaskCreate(BaseModel):
     enabled: bool = False
     k8s_namespace: str = "default"
     k8s_kubeconfig: str | None = None
+    environment_id: str = "test"
     s3_archive_enabled: bool = False
     s3_bucket: str | None = None
     s3_region: str = "us-east-1"
@@ -38,6 +39,7 @@ class MonitorTaskUpdate(BaseModel):
     enabled: bool | None = None
     k8s_namespace: str | None = None
     k8s_kubeconfig: str | None = None
+    environment_id: str | None = None
     s3_archive_enabled: bool | None = None
     s3_bucket: str | None = None
     s3_region: str | None = None
@@ -64,6 +66,7 @@ class MonitorTaskOut(BaseModel):
     k8s_namespace: str
     k8s_kubeconfig: str | None = None
     k8s_kubeconfig_set: bool = False
+    environment_id: str = "test"
     s3_archive_enabled: bool
     s3_bucket: str | None = None
     s3_region: str

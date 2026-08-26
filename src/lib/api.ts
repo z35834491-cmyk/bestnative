@@ -22,6 +22,8 @@ export async function readApiError(res: Response): Promise<string> {
   }
 }
 
+import { getActiveEnvId } from './env'
+
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
   if (!headers.has('Content-Type') && init.body) {
@@ -29,6 +31,8 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   }
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
+  const envId = getActiveEnvId()
+  if (envId) headers.set('X-Shore-Environment', envId)
   return fetch(path, { ...init, headers })
 }
 

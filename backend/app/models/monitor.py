@@ -22,6 +22,7 @@ class MonitorTask(TimestampMixin, Base):
     # K8s
     k8s_namespace: Mapped[str] = mapped_column(String(255), default="default")
     k8s_kubeconfig: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    environment_id: Mapped[str] = mapped_column(String(32), default="test")  # dev / test，对应 environments.json
 
     # S3
     s3_archive_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

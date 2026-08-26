@@ -8,15 +8,17 @@ from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.incident import Incident
 from app.providers.kubernetes import KubernetesProvider
+from app.services.environments import get_active_profile
+from app.services.kubeconfig_store import resolve_k8s_config_sync
 from app.tools.registry import ToolTier, register_tool
 
 
-def _k8s_provider() -> KubernetesProvider:
-    return KubernetesProvider(settings.CLUSTER_NAME, {
-        "in_cluster": settings.K8S_IN_CLUSTER,
-        "kubeconfig": settings.KUBECONFIG or None,
-        "context": settings.K8S_CONTEXT or None,
-    })
+def _k8s_provider() -> KubernetesProvider | None:
+    profile = get_active_profile()
+    cfg = resolve_k8s_config_sync(profile)
+    if not cfg.get("kubeconfig_content") and not cfg.get("in_cluster"):
+        return None
+    return KubernetesProvider(profile.cluster_name, cfg)
 
 
 @register_tool(
@@ -81,5 +83,8 @@ async def search_knowledge(query: str, limit: int = 5) -> list[dict]:
 async def restart_pod(namespace: str, pod_name: str) -> dict:
     if not settings.OPS_AUTO_REMEDIATE:
         return {"error": "自动修复未启用，请在平台设置开启 OPS_AUTO_REMEDIATE"}
-    ok = await _k8s_provider().restart_pod(namespace=namespace, pod_name=pod_name)
+    provider = _k8s_provider()
+    if provider is None:
+        return {"error": "K8s 未配置"}
+    ok = await provider.restart_pod(namespace=namespace, pod_name=pod_name)
     return {"restarted": ok, "namespace": namespace, "pod": pod_name}

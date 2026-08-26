@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.monitor import MonitorTask
 from app.schemas.monitor import BatchSearchRequest, MonitorTaskCreate, MonitorTaskUpdate
@@ -214,30 +215,46 @@ async def monitor_index_detail(task_id: UUID, key: str, db: AsyncSession = Depen
 
 
 def _serve_local_file(fpath: str, keyword: str | None, page: int, page_size: int, reverse: bool) -> dict:
+    max_page = settings.LOG_MONITOR_VIEW_MAX_PAGE_SIZE
+    page_size = min(max(1, page_size), max_page)
+
     if keyword:
         results = []
         keywords = keyword.lower().split()
+        max_kw = 2000
         with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
                 line_lower = line.lower()
                 if all(k in line_lower for k in keywords):
                     results.append(line.rstrip())
-                    if len(results) > 2000:
+                    if len(results) >= max_kw:
                         results.append("... (Matches truncated, found > 2000 lines) ...")
                         break
+        if reverse:
+            results.reverse()
         return {"content": "\n".join(results), "is_search_result": True, "total": len(results)}
 
     file_size = os.path.getsize(fpath)
-    if file_size > 50 * 1024 * 1024 and not keyword:
-        if reverse and page == 1:
-            with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
-                all_lines = list(deque(f, page_size))
-                all_lines.reverse()
-                return {
-                    "content": "".join(all_lines), "total": page_size + 1,
-                    "page": 1, "page_size": page_size,
-                    "warning": "File too large, showing last lines only.",
-                }
+    tail_threshold = 5 * 1024 * 1024
+    if file_size > tail_threshold or (reverse and file_size > 512 * 1024):
+        # 大文件倒序：只读尾部，避免整文件进内存
+        read_lines = page_size * max(page, 1) + page_size
+        with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
+            tail_lines = list(deque(f, read_lines))
+        total = len(tail_lines)
+        if reverse:
+            tail_lines.reverse()
+        p = page if page != -1 else 1
+        start = (p - 1) * page_size
+        chunk = tail_lines[start:start + page_size]
+        return {
+            "content": "".join(chunk),
+            "total": total,
+            "page": p,
+            "page_size": page_size,
+            "warning": "大文件仅加载尾部片段，完整日志请下载。",
+            "truncated": file_size > tail_threshold,
+        }
 
     with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
         all_lines = f.readlines()
@@ -255,11 +272,13 @@ async def monitor_log_view(
     filename: str,
     keyword: str | None = None,
     page: int = Query(1),
-    page_size: int = Query(1000, le=5000),
-    reverse: bool = False,
+    page_size: int | None = Query(None),
+    reverse: bool = Query(True),
     db: AsyncSession = Depends(get_db),
 ):
     task = await _get_task(db, task_id)
+    ps = page_size or settings.LOG_MONITOR_VIEW_PAGE_SIZE
+    ps = min(max(1, ps), settings.LOG_MONITOR_VIEW_MAX_PAGE_SIZE)
 
     if filename.endswith('_s3_recent.log'):
         s3_client = get_s3_client(task)
@@ -320,14 +339,14 @@ async def monitor_log_view(
             total = len(all_lines)
             if reverse:
                 all_lines.reverse()
-            p = page if page != -1 else max(1, math.ceil(total / page_size))
-            start = (p - 1) * page_size
-            return {"content": "".join(all_lines[start:start + page_size]), "total": total, "page": p, "page_size": page_size}
+            p = page if page != -1 else max(1, math.ceil(total / ps))
+            start = (p - 1) * ps
+            return {"content": "".join(all_lines[start:start + ps]), "total": total, "page": p, "page_size": ps}
 
     log_dir = os.path.join(monitor_engine.LOG_DIR, str(task_id))
     local_path = os.path.join(log_dir, filename)
     if not (os.path.sep in filename or '..' in filename) and os.path.exists(local_path):
-        return _serve_local_file(local_path, keyword, page, page_size, reverse)
+        return _serve_local_file(local_path, keyword, page, ps, reverse)
 
     s3_client = get_s3_client(task)
     if s3_client and any(filename.startswith(p) for p in task_s3_prefixes(task)):
@@ -353,17 +372,36 @@ async def monitor_log_view(
                         results.append("... (Matches truncated) ...")
                         break
             return {"content": "\n".join(results), "is_search_result": True, "total": len(results)}
-        if size > 50 * 1024 * 1024:
-            raise HTTPException(413, "File too large")
+        if size > 50 * 1024 * 1024 and not reverse:
+            raise HTTPException(413, "File too large; use reverse=true pagination")
+        if size > 5 * 1024 * 1024:
+            # S3 大文件：只读尾部
+            tail_bytes = min(size, ps * 400 * max(page, 1))
+            range_header = f"bytes={max(0, size - tail_bytes)}-{size - 1}"
+            obj = s3_client.get_object(Bucket=task.s3_bucket, Key=filename, Range=range_header)
+            text = obj['Body'].read().decode('utf-8', errors='replace')
+            all_lines = text.splitlines(True)
+            total = len(all_lines)
+            if reverse:
+                all_lines.reverse()
+            p = page if page != -1 else 1
+            start = (p - 1) * ps
+            return {
+                "content": "".join(all_lines[start:start + ps]),
+                "total": total,
+                "page": p,
+                "page_size": ps,
+                "warning": "S3 大文件仅返回尾部片段",
+            }
         obj = s3_client.get_object(Bucket=task.s3_bucket, Key=filename)
         text = obj['Body'].read().decode('utf-8', errors='replace')
         all_lines = text.splitlines(True)
         total = len(all_lines)
         if reverse:
             all_lines.reverse()
-        p = page if page != -1 else max(1, math.ceil(total / page_size))
-        start = (p - 1) * page_size
-        return {"content": "".join(all_lines[start:start + page_size]), "total": total, "page": p, "page_size": page_size}
+        p = page if page != -1 else max(1, math.ceil(total / ps))
+        start = (p - 1) * ps
+        return {"content": "".join(all_lines[start:start + ps]), "total": total, "page": p, "page_size": ps}
 
     raise HTTPException(404, "File not found")
 

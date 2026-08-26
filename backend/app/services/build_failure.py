@@ -59,14 +59,18 @@ def fetch_pod_startup_logs(service: str, branch: str, *, tail_lines: int = 200) 
         return ""
 
     namespace = namespace_for_branch(branch)
-    ctx = settings.K8S_CONTEXT or None
+    from app.services.environments import get_profile
+    from app.services.kubeconfig_store import resolve_k8s_config_sync
+    profile = get_profile((branch or "").lower())
+    cfg = resolve_k8s_config_sync(profile) if profile else {}
     try:
-        if settings.K8S_IN_CLUSTER:
+        if cfg.get("in_cluster"):
             k8s_config.load_incluster_config()
-        elif settings.KUBECONFIG:
-            k8s_config.load_kube_config(config_file=settings.KUBECONFIG, context=ctx)
+        elif cfg.get("kubeconfig_content"):
+            import yaml
+            k8s_config.load_kube_config_from_dict(yaml.safe_load(cfg["kubeconfig_content"]))
         else:
-            k8s_config.load_kube_config(context=ctx)
+            return ""
     except Exception as exc:  # noqa: BLE001
         logger.debug("build_failure.k8s_config.failed", error=str(exc)[:80])
         return ""

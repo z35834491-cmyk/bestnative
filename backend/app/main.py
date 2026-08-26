@@ -27,6 +27,11 @@ async def lifespan(app: FastAPI):
         logger.error("startup.insecure_secret_key")
         raise RuntimeError("生产环境必须设置 SECRET_KEY")
     start_scheduler()
+    try:
+        from app.bootstrap import sync_dev_monitor_tasks
+        await sync_dev_monitor_tasks()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("monitor.dev_sync.failed", error=str(exc)[:120])
     if settings.LOG_MONITOR_ENABLED:
         from app.services.log_monitor.engine import monitor_engine
         monitor_engine.start()

@@ -15,8 +15,18 @@ from app.services.build_failure import classify_failure_kind, fetch_pod_startup_
 from app.services.build_ingest import clear_service_deployments, ingest_build_record
 from app.services.pipeline_time import gitlab_updated_after_param, is_pipeline_fresh, pipeline_updated_at
 from app.services.build_observer import finalize_success_build, process_build
+from app.services.environments import list_profiles
 
 logger = get_logger("gitlab_ci_scanner")
+
+
+def _branches_for_scan() -> list[str]:
+    branches: list[str] = []
+    for profile in list_profiles():
+        branches.extend(profile.gitlab_ci_branches or [])
+    if not branches:
+        branches = settings.gitlab_ci_branches()
+    return list(dict.fromkeys(b.strip() for b in branches if b.strip()))
 
 
 def _gitlab_base() -> str:
@@ -267,7 +277,7 @@ async def run_gitlab_ci_scan() -> dict:
     if not client.enabled:
         return {"status": "skipped", "reason": "GITLAB_URL / GITLAB_TOKEN 未配置"}
 
-    branches = settings.gitlab_ci_branches()
+    branches = _branches_for_scan()
     summary = {"status": "ok", "projects": 0, "ingested": 0, "skipped": 0, "errors": 0, "details": []}
     try:
         projects = await client.list_projects()

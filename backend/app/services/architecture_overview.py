@@ -11,7 +11,7 @@ from functools import lru_cache
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.services.environments import EnvironmentProfile, ensure_cluster_discovered, get_active_profile, get_cluster_id
 from app.models.incident import Incident
 from app.models.infra import Cluster, Middleware, Service
 
@@ -43,12 +43,19 @@ def _match_health(name: str, svc_map: dict, mw_map: dict) -> dict:
     return {"health": "unknown", "found": False}
 
 
-async def build_home_overview(db: AsyncSession) -> dict:
+async def build_home_overview(db: AsyncSession, profile: EnvironmentProfile | None = None) -> dict:
+    profile = profile or get_active_profile()
+    cluster_id = await ensure_cluster_discovered(db, profile)
     blueprint = load_architecture_blueprint()
 
-    services = (await db.execute(select(Service))).scalars().all()
+    svc_q = select(Service)
+    if cluster_id:
+        svc_q = svc_q.where(Service.cluster_id == cluster_id)
+        services = (await db.execute(svc_q)).scalars().all()
+    else:
+        services = []
     middlewares = (await db.execute(select(Middleware))).scalars().all()
-    clusters = (await db.execute(select(Cluster))).scalars().all()
+    clusters = (await db.execute(select(Cluster).where(Cluster.name == profile.cluster_name))).scalars().all()
 
     svc_map = {s.name.lower(): {
         "health": s.health, "replicas": s.replicas, "readyReplicas": s.ready_replicas, "namespace": s.namespace,
@@ -80,8 +87,10 @@ async def build_home_overview(db: AsyncSession) -> dict:
     critical = sum(1 for s in services if s.health == "critical")
 
     return {
-        "environment": settings.ENVIRONMENT,
-        "clusterName": settings.CLUSTER_NAME,
+        "environment": profile.id,
+        "environmentLabel": profile.label,
+        "clusterName": profile.cluster_name,
+        "discoveryPending": cluster_id is None,
         "stats": {
             "services": len(services),
             "middlewares": len(middlewares),

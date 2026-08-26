@@ -15,6 +15,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.environments import EnvironmentProfile, get_active_profile
 
 logger = get_logger("trace_topology")
 
@@ -42,13 +43,16 @@ _SOURCE_FIELDS = _TIMELINE_SOURCE_FIELDS
 _MAX_LOG_MESSAGE_LEN = 2000
 
 
-def _es_hosts() -> list[str]:
-    if not settings.ES_HOST:
+def _es_hosts(profile: EnvironmentProfile | None = None) -> list[str]:
+    profile = profile or get_active_profile()
+    host_raw = (profile.es_host or settings.ES_HOST or "").strip()
+    if not host_raw:
         return []
-    host = settings.ES_HOST.strip().rstrip("/")
+    host = host_raw.rstrip("/")
+    port = profile.es_port or settings.ES_PORT
     if host.startswith("http://") or host.startswith("https://"):
         return [host]
-    return [f"https://{host}:{settings.ES_PORT}", f"http://{host}:{settings.ES_PORT}"]
+    return [f"https://{host}:{port}", f"http://{host}:{port}"]
 
 
 _client: httpx.AsyncClient | None = None
@@ -69,10 +73,10 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def _search_trace_log(body: dict[str, Any]) -> dict[str, Any]:
+async def _search_trace_log(body: dict[str, Any], profile: EnvironmentProfile | None = None) -> dict[str, Any]:
     last_error = ""
     client = _get_client()
-    for host in _es_hosts():
+    for host in _es_hosts(profile):
         try:
             resp = await client.post(f"{host}/{_TRACE_INDEX}/_search", json=body)
             resp.raise_for_status()
@@ -319,24 +323,26 @@ async def get_trace_graph(
     trace_limit: int = 80,
     events_per_trace: int = 30,
     trace_id: str = "",
+    profile: EnvironmentProfile | None = None,
 ) -> dict[str, Any]:
+    profile = profile or get_active_profile()
     tid = (trace_id or "").strip()
     if tid:
-        key = f"tg:tid:{tid}"
-        return await _get_cached(key, _TRACE_GRAPH_TTL, lambda: _build_single_trace_graph(tid))
+        key = f"tg:tid:{tid}:{profile.id}"
+        return await _get_cached(key, _TRACE_GRAPH_TTL, lambda: _build_single_trace_graph(tid, profile))
 
     safe_hours = max(1, min(hours, 168))
     safe_trace_limit = max(1, min(trace_limit, 200))
     safe_events_per_trace = max(5, min(events_per_trace, 80))
-    key = f"tg:{service}:{safe_hours}:{safe_trace_limit}:{safe_events_per_trace}"
+    key = f"tg:{profile.id}:{service}:{safe_hours}:{safe_trace_limit}:{safe_events_per_trace}"
     return await _get_cached(
         key,
         _TRACE_GRAPH_TTL,
-        lambda: _build_trace_graph(service, safe_hours, safe_trace_limit, safe_events_per_trace),
+        lambda: _build_trace_graph(service, safe_hours, safe_trace_limit, safe_events_per_trace, profile),
     )
 
 
-async def _build_single_trace_graph(trace_id: str) -> dict[str, Any]:
+async def _build_single_trace_graph(trace_id: str, profile: EnvironmentProfile | None = None) -> dict[str, Any]:
     body = {
         "size": 500,
         "track_total_hits": False,
@@ -344,7 +350,7 @@ async def _build_single_trace_graph(trace_id: str) -> dict[str, Any]:
         "sort": [{"timestamp": {"order": "asc", "unmapped_type": "date"}}],
         "query": {"bool": {"should": _term_or_match("traceId", trace_id), "minimum_should_match": 1}},
     }
-    resp = await _search_trace_log(body)
+    resp = await _search_trace_log(body, profile)
     items = [_source(h, include_message=True) for h in resp.get("hits", {}).get("hits", [])]
     if not items:
         return {"nodes": [], "edges": [], "traces": [], "source": "es:trace_log", "hours": 0, "service": "", "traceId": trace_id}
@@ -464,7 +470,13 @@ def _graph_from_by_trace(
     return result
 
 
-async def _build_trace_graph(service: str, hours: int, trace_limit: int, events_per_trace: int) -> dict[str, Any]:
+async def _build_trace_graph(
+    service: str,
+    hours: int,
+    trace_limit: int,
+    events_per_trace: int,
+    profile: EnvironmentProfile | None = None,
+) -> dict[str, Any]:
     # 第一步：按入口服务筛 traceId（只用于发现链路，不能用于拉事件）
     discover_filters: list[dict[str, Any]] = [
         _time_filter(hours),
@@ -489,7 +501,7 @@ async def _build_trace_graph(service: str, hours: int, trace_limit: int, events_
             }
         },
     }
-    trace_resp = await _search_trace_log(trace_body)
+    trace_resp = await _search_trace_log(trace_body, profile)
     buckets = trace_resp.get("aggregations", {}).get("traces", {}).get("buckets", [])
     trace_ids = [str(b.get("key")) for b in buckets if b.get("key")]
     if not trace_ids:
@@ -507,7 +519,7 @@ async def _build_trace_graph(service: str, hours: int, trace_limit: int, events_
         ],
         "query": {"bool": {"filter": [{"terms": {"traceId.keyword": trace_ids}}]}},
     }
-    event_resp = await _search_trace_log(event_body)
+    event_resp = await _search_trace_log(event_body, profile)
     by_trace: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for hit in event_resp.get("hits", {}).get("hits", []):
         event = _source(hit, include_message=True)

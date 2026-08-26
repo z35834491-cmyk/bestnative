@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth'
+import { useEnvironments } from '@/lib/useEnvironments'
 
 const navItems = [
   { href: '/', label: '全局总览', icon: LayoutDashboard },
@@ -29,6 +30,7 @@ const navItems = [
 export default function AppSidebar() {
   const pathname = usePathname()
   const { user, logout } = useAuth()
+  const { environments, active, switchEnv } = useEnvironments()
   const [collapsed, setCollapsed] = useState(false)
 
   if (pathname === '/login') return null
@@ -44,6 +46,21 @@ export default function AppSidebar() {
         </div>
         {!collapsed && <span className="ml-3 font-bold text-white text-base whitespace-nowrap">Shore</span>}
       </div>
+
+      {!collapsed && environments.length > 1 && (
+        <div className="px-4 py-3 border-b border-shark-border">
+          <label className="text-[10px] text-shark-muted uppercase tracking-wider">环境</label>
+          <select
+            value={active}
+            onChange={e => switchEnv(e.target.value)}
+            className="mt-1 w-full bg-shark-bg border border-shark-border rounded-lg px-2 py-1.5 text-xs text-white"
+          >
+            {environments.map(env => (
+              <option key={env.id} value={env.id}>{env.label} ({env.clusterName})</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <nav className="flex-1 py-4 overflow-y-auto">
         {!collapsed && <div className="px-5 mb-2 text-[11px] font-semibold text-shark-muted uppercase tracking-wider">导航</div>}

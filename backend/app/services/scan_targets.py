@@ -30,20 +30,21 @@ def _normalize_host_port(host: str, port: int | None) -> list[str]:
     return out
 
 
-def _k8s_exposure_targets_sync() -> list[str]:
-    """从 K8s 实时拉 Ingress / LoadBalancer / NodePort 暴露面。"""
-    if not (settings.KUBECONFIG or settings.K8S_IN_CLUSTER):
+def _k8s_exposure_from_content(kubeconfig_content: str | None) -> list[str]:
+    """从已入库 kubeconfig 拉 Ingress / LoadBalancer / NodePort 暴露面。"""
+    if not kubeconfig_content and not settings.K8S_IN_CLUSTER:
         return []
     try:
+        import yaml
         from kubernetes import client, config as k8s_config
 
         if settings.K8S_IN_CLUSTER:
             k8s_config.load_incluster_config()
+        elif kubeconfig_content:
+            cfg_dict = yaml.safe_load(kubeconfig_content)
+            k8s_config.load_kube_config_from_dict(cfg_dict)
         else:
-            k8s_config.load_kube_config(
-                config_file=settings.KUBECONFIG or None,
-                context=settings.K8S_CONTEXT or None,
-            )
+            return []
         core = client.CoreV1Api()
         net = client.NetworkingV1Api()
         targets: set[str] = set()
@@ -88,6 +89,24 @@ def _k8s_exposure_targets_sync() -> list[str]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("scan_targets.k8s.failed", error=str(exc)[:120])
         return []
+
+
+def _k8s_exposure_targets_sync() -> list[str]:
+    """多环境：从 DB 已入库 kubeconfig 逐个采集并合并。"""
+    from app.services.environments import list_profiles
+    from app.services.kubeconfig_store import get_cluster_kubeconfig_sync
+
+    profiles = list_profiles()
+    contents = [get_cluster_kubeconfig_sync(p.cluster_name) for p in profiles]
+    contents = [c for c in contents if c]
+    if not contents:
+        if settings.K8S_IN_CLUSTER:
+            return _k8s_exposure_from_content(None)
+        return []
+    merged: set[str] = set()
+    for content in contents:
+        merged.update(_k8s_exposure_from_content(content))
+    return sorted(merged)
 
 
 async def collect_platform_targets(db: AsyncSession) -> tuple[list[str], dict]:

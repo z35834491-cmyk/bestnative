@@ -5,6 +5,7 @@ import { Settings, CheckCircle2, XCircle, AlertCircle, RefreshCw, Loader2 } from
 import { apiJson } from '@/lib/api'
 import { ErrorState } from '@/components/ui/AsyncState'
 import Link from 'next/link'
+import { useEnvironments } from '@/lib/useEnvironments'
 
 type CheckStatus = 'ok' | 'error' | 'not_configured' | 'unavailable' | 'empty' | 'degraded'
 
@@ -27,7 +28,72 @@ function StatusIcon({ status }: { status?: CheckStatus }) {
   return <XCircle size={16} className="text-red-400" />
 }
 
+function KubeconfigEditor({ environments }: { environments: Array<{ id: string; label: string; clusterName: string; kubeconfigConfigured?: boolean }> }) {
+  const [selected, setSelected] = useState('')
+  const [text, setText] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    if (!selected && environments.length) setSelected(environments[0].id)
+  }, [environments, selected])
+
+  const save = async () => {
+    if (!selected || !text.trim()) return
+    setSaving(true)
+    setMsg('')
+    try {
+      await apiJson(`/api/settings/environments/${selected}/kubeconfig`, {
+        method: 'PUT',
+        body: JSON.stringify({ kubeconfig: text }),
+      })
+      setMsg('已保存')
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!environments.length) return null
+  const cur = environments.find(e => e.id === selected)
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <select
+          value={selected}
+          onChange={e => setSelected(e.target.value)}
+          className="bg-shark-bg border border-shark-border rounded-lg px-3 py-2 text-sm text-white"
+        >
+          {environments.map(env => (
+            <option key={env.id} value={env.id}>
+              {env.label} ({env.clusterName}){env.kubeconfigConfigured ? ' ✓' : ''}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={save}
+          disabled={saving || !text.trim()}
+          className="text-xs px-3 py-2 rounded bg-shark-accent text-white disabled:opacity-50"
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+        {msg && <span className="text-xs text-shark-muted">{msg}</span>}
+      </div>
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        placeholder={cur ? `粘贴 ${cur.label} 集群 kubeconfig…` : '粘贴 kubeconfig…'}
+        rows={8}
+        className="w-full bg-slate-950/70 border border-shark-border rounded-lg px-3 py-2 text-xs text-white font-mono"
+      />
+    </div>
+  )
+}
+
 export default function SettingsPage() {
+  const { environments, active, switchEnv } = useEnvironments()
   const [checks, setChecks] = useState<IntegrationChecks | null>(null)
   const [maintenance, setMaintenance] = useState<Array<{ service: string; reason: string; until: number }>>([])
   const [checksLoading, setChecksLoading] = useState(true)
@@ -117,6 +183,35 @@ export default function SettingsPage() {
 
       <div className="flex-1 overflow-auto p-6 max-w-3xl space-y-6">
         {error && <ErrorState message={error} onRetry={() => loadChecks(true)} />}
+
+        <section className="glass rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-1">运行环境</h3>
+          <p className="text-[10px] text-shark-muted mb-3">切换后拓扑、Pod、监控检查会按所选 K8s 集群（context）过滤。</p>
+          {environments.length > 1 ? (
+            <select
+              value={active}
+              onChange={e => switchEnv(e.target.value)}
+              className="w-full max-w-xs bg-shark-bg border border-shark-border rounded-lg px-3 py-2 text-sm text-white"
+            >
+              {environments.map(env => (
+                <option key={env.id} value={env.id}>{env.label} ({env.clusterName})</option>
+              ))}
+            </select>
+          ) : (
+            <p className="text-xs text-shark-muted">
+              当前仅识别到 <span className="text-white">{active || checks?.environment || 'test'}</span>。
+              若需 dev/test 切换，请确认 <code className="text-shark-accent">backend/config/environments.json</code> 已配置并执行 <code className="text-shark-accent">docker compose up -d --build api frontend</code>。
+            </p>
+          )}
+        </section>
+
+        <section className="glass rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-1">K8s 集群凭证</h3>
+          <p className="text-[10px] text-shark-muted mb-4">
+            在 master 上执行 <code className="text-shark-accent">cat /etc/kubernetes/admin.conf</code>，复制内容粘贴到对应环境，保存即可。
+          </p>
+          <KubeconfigEditor environments={environments} />
+        </section>
 
         <section className="glass rounded-xl p-5">
           <h3 className="text-sm font-semibold text-white mb-1">集成健康检查</h3>
