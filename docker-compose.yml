@@ -1,5 +1,5 @@
 # ============================================================
-# BestNative — 本地开发 / 测试环境 docker compose
+# Shore — 本地开发 / 测试环境 docker compose
 # 全栈：frontend(next.js) + api(fastapi) + postgres(pgvector) + redis
 # Prometheus / ES 复用现有基础设施，不在此 compose 中
 # ============================================================
@@ -41,6 +41,7 @@ services:
     container_name: bestnative-api
     env_file:
       - ./backend/.env
+      - ./backend/.env.secrets
     environment:
       DATABASE_URL: postgresql+asyncpg://bestnative:bestnative@postgres:5432/bestnative
       DATABASE_URL_SYNC: postgresql://bestnative:bestnative@postgres:5432/bestnative

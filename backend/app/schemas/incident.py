@@ -13,6 +13,7 @@ class IncidentCreate(BaseModel):
     source: str = "prometheus"
     affected_services: list[str] = Field(default_factory=list)
     detail: dict[str, Any] = Field(default_factory=dict)
+    fingerprint: str = ""
 
 
 class StatusUpdate(BaseModel):

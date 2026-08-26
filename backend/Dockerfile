@@ -1,5 +1,5 @@
 # ============================================================
-# BestNative Backend Dockerfile — 多阶段构建，精简镜像
+# Shore Backend Dockerfile — 多阶段构建，精简镜像
 # ============================================================
 
 # 基础镜像已通过 `docker pull` 拉到本地缓存，buildkit 直接命中，不走网络
@@ -32,7 +32,8 @@ RUN set -eux; \
       esac; \
       wget -q "https://github.com/projectdiscovery/${tool}/releases/download/v${ver}/${tool}_${ver}_linux_${PDARCH}.zip" -O /tmp/${tool}.zip || true; \
       if [ -f /tmp/${tool}.zip ]; then unzip -o /tmp/${tool}.zip -d /usr/local/bin/ ${tool} 2>/dev/null || true; rm -f /tmp/${tool}.zip; fi; \
-    done
+    done; \
+    nuclei -update-templates 2>/dev/null || true
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertTriangle, Database, GitFork, Loader2, Search, WifiOff, X, Zap, ZoomIn, ZoomOut } from 'lucide-react'
 import { cn, healthDot } from '@/lib/utils'
+import { layoutNodes } from '@/lib/topology-layout'
 import type { TopoEdge, TopoNode, TraceGraph, TraceSummary, TraceTimeline } from '@/lib/types'
 
 const API = ''
@@ -27,7 +28,11 @@ export default function TopologyPage() {
   const [scale, setScale] = useState(1)
   const [service, setService] = useState('exchange-gateway')
   const [serviceDraft, setServiceDraft] = useState('exchange-gateway')
-  const [hours, setHours] = useState(24)
+  const [hours, setHours] = useState(1)
+  const [traceIdDraft, setTraceIdDraft] = useState('')
+  const [traceIdQuery, setTraceIdQuery] = useState('')
+  const [hoveredEdge, setHoveredEdge] = useState<TopoEdge | null>(null)
+  const [focusedTraceId, setFocusedTraceId] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<TraceTimeline | null>(null)
   const [timelineLoading, setTimelineLoading] = useState(false)
 
@@ -40,34 +45,61 @@ export default function TopologyPage() {
     return () => clearTimeout(t)
   }, [serviceDraft])
 
+  useEffect(() => {
+    const t = setTimeout(() => setTraceIdQuery(traceIdDraft.trim()), 400)
+    return () => clearTimeout(t)
+  }, [traceIdDraft])
+
   const fetchGraph = useCallback(async () => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
     setLoading(true); setError(null); setSelectedEdge(null); setTimeline(null)
     try {
-      const res = await fetch(`${API}/api/topology/trace-graph?service=${encodeURIComponent(service)}&hours=${hours}&trace_limit=200`, { signal: controller.signal })
+      const params = new URLSearchParams()
+      if (traceIdQuery) {
+        params.set('trace_id', traceIdQuery)
+      } else {
+        params.set('service', service)
+        params.set('hours', String(hours))
+        params.set('trace_limit', '80')
+        params.set('events_per_trace', '50')
+      }
+      const res = await fetch(`${API}/api/topology/trace-graph?${params}`, { signal: controller.signal })
       if (!res.ok) throw new Error(await readApiError(res))
-      setGraph(await res.json())
+      const data = await res.json()
+      setGraph(data)
+      if (traceIdQuery && data.traces?.length) {
+        setFocusedTraceId(traceIdQuery)
+        void openTrace(traceIdQuery)
+      } else {
+        setFocusedTraceId(null)
+      }
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       setError(e instanceof Error ? e.message : '无法连接 API')
     } finally {
       if (abortRef.current === controller) setLoading(false)
     }
-  }, [service, hours])
+  }, [service, hours, traceIdQuery])
 
   useEffect(() => { fetchGraph() }, [fetchGraph])
 
-  const openTrace = async (traceId: string) => {
+  const openTrace = async (traceId: string, append = false, offset = 0) => {
     timelineAbortRef.current?.abort()
     const controller = new AbortController()
     timelineAbortRef.current = controller
     setTimelineLoading(true)
     try {
-      const res = await fetch(`${API}/api/topology/traces/${encodeURIComponent(traceId)}?size=800`, { signal: controller.signal })
+      const res = await fetch(`${API}/api/topology/traces/${encodeURIComponent(traceId)}?size=150&offset=${offset}`, { signal: controller.signal })
       if (!res.ok) throw new Error(await readApiError(res))
-      setTimeline(await res.json())
+      const data = await res.json()
+      setTimeline(prev => {
+        if (append && prev?.traceId === traceId) {
+          return { ...data, events: [...prev.events, ...data.events] }
+        }
+        return data
+      })
     } catch (e) {
       if ((e as Error).name !== 'AbortError') setTimeline(null)
     } finally {
@@ -77,14 +109,50 @@ export default function TopologyPage() {
 
   // 所有 hooks / 派生计算必须无条件执行（React Hooks 规则）：
   // 派生值放在 error 早退之前，避免 error 状态切换时 hooks 数量变化触发崩溃。
-  const nodes = useMemo(() => layoutNodes(graph?.nodes || []), [graph])
+  const nodes = useMemo(() => layoutNodes(graph?.nodes || [], graph?.edges || [], service), [graph, service])
+  const nodeMap = useMemo(() => {
+    const m = new Map<string, TopoNode>()
+    for (const n of nodes) {
+      m.set(n.id, n)
+      m.set(n.name, n)
+    }
+    return m
+  }, [nodes])
   const edges = graph?.edges || []
   const traces = graph?.traces || []
+  const edgeCurves = useMemo(() => {
+    const seen = new Map<string, number>()
+    return edges.map(e => {
+      const key = `${e.from || e.source}-${e.to || e.target}`
+      const idx = seen.get(key) || 0
+      seen.set(key, idx + 1)
+      return (idx - 0.5) * 36
+    })
+  }, [edges])
+  const highlightPath = useMemo(() => {
+    const tid = focusedTraceId || selectedEdge?.lastTraceId
+    const trace = traces.find(t => t.traceId === tid) || (traceIdQuery ? traces[0] : null)
+    if (!trace) return { nodes: new Set<string>(), edges: new Set<string>() }
+    const nodeIds = new Set<string>()
+    for (const svc of trace.services) nodeIds.add(svc)
+    for (const comp of trace.components || []) nodeIds.add(`middleware:${comp}`)
+    const edgeKeys = new Set<string>()
+    const seq: string[] = []
+    for (const svc of trace.services) {
+      if (!seq.length || seq[seq.length - 1] !== svc) seq.push(svc)
+    }
+    for (const comp of trace.components || []) {
+      const mid = `middleware:${comp}`
+      if (seq[seq.length - 1] !== mid) seq.push(mid)
+    }
+    for (let i = 0; i < seq.length - 1; i++) edgeKeys.add(`${seq[i]}->${seq[i + 1]}`)
+    return { nodes: nodeIds, edges: edgeKeys }
+  }, [traces, focusedTraceId, selectedEdge, traceIdQuery])
   const serviceOptions = useMemo(() => [...new Set([service, ...nodes.filter(n => n.type === 'service').map(n => n.name), ...traces.flatMap(t => t.services)])].filter(Boolean).sort(), [nodes, traces, service])
   const middlewareCount = nodes.filter(n => n.type === 'middleware').length
   const delayedEdges = edges.filter(e => e.avgLatencyMs !== undefined || e.p95LatencyMs !== undefined).length
-  const maxX = Math.max(...nodes.map(n => (n.x || 0) + 150), 900) + 40
-  const maxY = Math.max(...nodes.map(n => (n.y || 0) + 72), 520) + 40
+  const maxX = Math.max(...nodes.map(n => (n.x || 0) + 170), 1000) + 60
+  const maxY = Math.max(...nodes.map(n => (n.y || 0) + 90), 600) + 60
 
   if (error) {
     return <div className="h-full flex items-center justify-center"><div className="text-center space-y-3"><WifiOff size={40} className="text-red-400 mx-auto" /><p className="text-sm text-shark-muted">{error}</p><button onClick={fetchGraph} className="text-xs text-shark-accent border border-shark-accent/30 px-3 py-1.5 rounded">重试</button></div></div>
@@ -97,11 +165,21 @@ export default function TopologyPage() {
         <span className="text-xs text-shark-muted">Trace 链路 · {nodes.length} 节点 · {edges.length} 连接 · {traces.length} traces · 中间件 {middlewareCount} · 延迟边 {delayedEdges}</span>
         <div className="flex items-center gap-2 ml-2">
           <Search size={14} className="text-shark-muted" />
-          <input value={serviceDraft} onChange={e => setServiceDraft(e.target.value)} list="trace-service-options" placeholder="入口服务" className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white w-44" />
+          <input value={serviceDraft} onChange={e => setServiceDraft(e.target.value)} list="trace-service-options" placeholder="入口服务" disabled={!!traceIdQuery} className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white w-36 disabled:opacity-40" />
           <datalist id="trace-service-options">{serviceOptions.map(s => <option value={s} key={s} />)}</datalist>
-          <select value={hours} onChange={e => setHours(Number(e.target.value))} className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white">
+          <input
+            value={traceIdDraft}
+            onChange={e => setTraceIdDraft(e.target.value)}
+            placeholder="TraceID 搜索"
+            className="bg-slate-950/70 border border-purple-500/30 rounded px-2 py-1 text-xs text-white w-52 font-mono"
+          />
+          {traceIdQuery && (
+            <button onClick={() => { setTraceIdDraft(''); setTraceIdQuery(''); setFocusedTraceId(null) }} className="text-[10px] text-shark-muted hover:text-white px-1">清除</button>
+          )}
+          <select value={hours} onChange={e => setHours(Number(e.target.value))} disabled={!!traceIdQuery} className="bg-slate-950/70 border border-shark-border rounded px-2 py-1 text-xs text-white disabled:opacity-40">
             <option value={1}>1小时</option><option value={6}>6小时</option><option value={24}>24小时</option><option value={72}>3天</option><option value={168}>7天</option>
           </select>
+          {hours >= 24 && <span className="text-[10px] text-amber-400">大范围查询较慢</span>}
         </div>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setScale(s => Math.max(0.3, s - 0.15))} className="text-shark-muted hover:text-white"><ZoomOut size={16} /></button>
@@ -120,40 +198,67 @@ export default function TopologyPage() {
               {edges.map((e, i) => {
                 const fromId = e.from || e.source || ''
                 const toId = e.to || e.target || ''
-                const from = nodes.find(s => s.id === fromId || s.name === fromId)
-                const to = nodes.find(s => s.id === toId || s.name === toId)
+                const from = nodeMap.get(fromId)
+                const to = nodeMap.get(toId)
                 if (!from || !to) return null
                 const col = edgeColor(e, to)
-                const active = selectedEdge === e
+                const active = selectedEdge === e || hoveredEdge === e
+                const dimmed = highlightPath.edges.size > 0 && !highlightPath.edges.has(`${fromId}->${toId}`)
+                const path = edgePath(from, to, edgeCurves[i] || 0)
+                const mid = edgeMid(from, to, edgeCurves[i] || 0)
                 const label = edgeLabel(e)
                 return (
-                  <g key={`${fromId}-${toId}-${i}`} onClick={() => setSelectedEdge(e)} className="cursor-pointer">
-                    <line x1={(from.x||0)+70} y1={(from.y||0)+34} x2={(to.x||0)+70} y2={(to.y||0)+34} stroke={col} strokeWidth={active ? 4 : 2.4} opacity={active ? 0.95 : 0.65} />
-                    <polygon points={`${(to.x||0)+70},${(to.y||0)+34} ${(to.x||0)+64},${(to.y||0)+29} ${(to.x||0)+64},${(to.y||0)+39}`} fill={col} opacity={0.75} />
-                    <text x={((from.x||0)+(to.x||0))/2+70} y={((from.y||0)+(to.y||0))/2+24} textAnchor="middle" className="text-[10px] fill-purple-200">{label}</text>
+                  <g
+                    key={`${fromId}-${toId}-${i}`}
+                    onClick={() => setSelectedEdge(e)}
+                    onMouseEnter={() => setHoveredEdge(e)}
+                    onMouseLeave={() => setHoveredEdge(null)}
+                    className="cursor-pointer"
+                    opacity={dimmed ? 0.2 : 1}
+                  >
+                    <path d={path} fill="none" stroke={col} strokeWidth={active ? 3.5 : 2} opacity={active ? 0.95 : 0.7} />
+                    <polygon points={arrowHead(from, to, edgeCurves[i] || 0)} fill={col} opacity={0.8} />
+                    {active && (
+                      <>
+                        <rect x={mid.x - 58} y={mid.y - 18} width={116} height={16} rx={4} fill="#0f172a" opacity={0.92} />
+                        <text x={mid.x} y={mid.y - 6} textAnchor="middle" className="text-[10px] fill-purple-100">{label}</text>
+                      </>
+                    )}
                   </g>
                 )
               })}
               {nodes.map(svc => {
                 const sel = selected === svc.id
+                const dimmed = highlightPath.nodes.size > 0 && !highlightPath.nodes.has(svc.id) && !highlightPath.nodes.has(svc.name)
                 const x = svc.x || 0; const y = svc.y || 0
                 const isMid = svc.type === 'middleware'
                 return (
-                  <g key={svc.id} transform={`translate(${x},${y})`} onClick={() => setSelected(sel ? null : svc.id)} className="cursor-pointer">
-                    <rect width="140" height="68" rx={isMid ? 18 : 10} fill={sel ? 'rgba(56,189,248,0.12)' : '#0f172a'} stroke={sel ? '#38bdf8' : isMid ? '#0ea5e9' : '#581c87'} strokeWidth={sel ? 2 : 1.2} />
+                  <g key={svc.id} transform={`translate(${x},${y})`} onClick={() => setSelected(sel ? null : svc.id)} className="cursor-pointer" opacity={dimmed ? 0.35 : 1}>
+                    <rect width="160" height="80" rx={isMid ? 18 : 10} fill={sel ? 'rgba(56,189,248,0.12)' : '#0f172a'} stroke={sel ? '#38bdf8' : isMid ? '#0ea5e9' : '#581c87'} strokeWidth={sel ? 2 : 1.2} />
                     <circle cx="14" cy="14" r="5" className={healthDot[svc.health]} />
                     <text x="26" y="18" className="text-[9px] fill-shark-muted uppercase">{isMid ? 'middleware' : 'trace service'}</text>
-                    <text x="70" y="38" textAnchor="middle" className={cn('text-[11px] font-semibold', isMid ? 'fill-cyan-200' : 'fill-white')}>
+                    <text x="80" y="38" textAnchor="middle" className={cn('text-[11px] font-semibold', isMid ? 'fill-cyan-200' : 'fill-white')}>
                       {svc.name.length > 20 ? svc.name.slice(0,18)+'…' : svc.name}
                     </text>
-                    <text x="70" y="56" textAnchor="middle" className="text-[9px] fill-shark-muted">{svc.traceCount || 0} traces · {svc.errorCount || 0} err</text>
+                    <text x="80" y="56" textAnchor="middle" className="text-[9px] fill-shark-muted">{svc.traceCount || 0} traces · {svc.errorCount || 0} err</text>
                   </g>
                 )
               })}
             </svg>
           )}
         </div>
-        <TracePanel traces={traces} edge={selectedEdge} timeline={timeline} loading={timelineLoading} onOpenTrace={openTrace} onCloseTimeline={() => setTimeline(null)} />
+        <TracePanel
+          traces={traces}
+          traceFilter={traceIdQuery}
+          edge={selectedEdge}
+          timeline={timeline}
+          loading={timelineLoading}
+          focusedTraceId={focusedTraceId}
+          onFocusTrace={setFocusedTraceId}
+          onOpenTrace={(id) => { setFocusedTraceId(id); openTrace(id) }}
+          onLoadMore={(id, offset) => openTrace(id, true, offset)}
+          onCloseTimeline={() => setTimeline(null)}
+        />
       </div>
     </div>
   )
@@ -172,13 +277,53 @@ function edgeColor(e: TopoEdge, target: TopoNode) {
   return '#a855f7'
 }
 
-function TracePanel({ traces, edge, timeline, loading, onOpenTrace, onCloseTimeline }: { traces: TraceSummary[]; edge: TopoEdge | null; timeline: TraceTimeline | null; loading: boolean; onOpenTrace: (id: string) => void; onCloseTimeline: () => void }) {
+function edgePath(from: TopoNode, to: TopoNode, curve: number) {
+  const x1 = (from.x || 0) + 80, y1 = (from.y || 0) + 40
+  const x2 = (to.x || 0) + 80, y2 = (to.y || 0) + 40
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2 + curve
+  return `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`
+}
+
+function edgeMid(from: TopoNode, to: TopoNode, curve: number) {
+  const x1 = (from.x || 0) + 80, y1 = (from.y || 0) + 40
+  const x2 = (to.x || 0) + 80, y2 = (to.y || 0) + 40
+  return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 + curve / 2 }
+}
+
+function arrowHead(from: TopoNode, to: TopoNode, curve: number) {
+  const x1 = (from.x || 0) + 80, y1 = (from.y || 0) + 40
+  const x2 = (to.x || 0) + 80, y2 = (to.y || 0) + 40
+  const t = 0.92
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2 + curve
+  const px = (1 - t) * (1 - t) * x1 + 2 * (1 - t) * t * cx + t * t * x2
+  const py = (1 - t) * (1 - t) * y1 + 2 * (1 - t) * t * cy + t * t * y2
+  const angle = Math.atan2(y2 - py, x2 - px)
+  const s = 7
+  const ax = x2 - s * Math.cos(angle - 0.4)
+  const ay = y2 - s * Math.sin(angle - 0.4)
+  const bx = x2 - s * Math.cos(angle + 0.4)
+  const by = y2 - s * Math.sin(angle + 0.4)
+  return `${x2},${y2} ${ax},${ay} ${bx},${by}`
+}
+
+function TracePanel({ traces, traceFilter, edge, timeline, loading, focusedTraceId, onFocusTrace, onOpenTrace, onLoadMore, onCloseTimeline }: {
+  traces: TraceSummary[]
+  traceFilter: string
+  edge: TopoEdge | null
+  timeline: TraceTimeline | null
+  loading: boolean
+  focusedTraceId: string | null
+  onFocusTrace: (id: string | null) => void
+  onOpenTrace: (id: string) => void
+  onLoadMore: (id: string, offset: number) => void
+  onCloseTimeline: () => void
+}) {
   const edgeTrace = edge?.lastTraceId
-  const filtered = edge ? traces.filter(t => {
+  const filtered = (edge ? traces.filter(t => {
     const from = edge.from || edge.source || ''
     const to = edge.to || edge.target || ''
     return t.services.includes(from) || t.services.includes(to) || t.components?.some(c => to.endsWith(c))
-  }) : traces
+  }) : traces).filter(t => !traceFilter || t.traceId.includes(traceFilter))
   return (
     <aside className="w-[430px] shrink-0 border-l border-shark-border bg-slate-950/60 overflow-hidden flex flex-col">
       <div className="p-4 border-b border-shark-border">
@@ -191,7 +336,7 @@ function TracePanel({ traces, edge, timeline, loading, onOpenTrace, onCloseTimel
         {edgeTrace && <button onClick={() => onOpenTrace(edgeTrace)} className="mt-3 text-xs px-3 py-1.5 rounded border border-purple-400/30 text-purple-200 hover:bg-purple-400/10">打开最近 trace</button>}
       </div>
       <div className="flex-1 overflow-auto p-3 space-y-2">
-        {filtered.slice(0, 80).map(t => <button key={t.traceId} onClick={() => onOpenTrace(t.traceId)} className="w-full text-left rounded-lg border border-shark-border bg-slate-900/60 hover:border-purple-400/40 p-3">
+        {filtered.slice(0, 50).map(t => <button key={t.traceId} onClick={() => onOpenTrace(t.traceId)} onMouseEnter={() => onFocusTrace(t.traceId)} onMouseLeave={() => onFocusTrace(null)} className={cn('w-full text-left rounded-lg border bg-slate-900/60 hover:border-purple-400/40 p-3', focusedTraceId === t.traceId ? 'border-purple-400/60 bg-purple-500/10' : 'border-shark-border')}>
           <div className="flex items-center gap-2"><code className="text-[11px] text-purple-200 truncate flex-1">{t.traceId}</code>{t.hasError && <AlertTriangle size={13} className="text-yellow-300" />}</div>
           <div className="mt-1 text-[11px] text-shark-muted truncate">{t.services.join(' → ') || 'unknown'}{t.components?.length ? ` → ${t.components.map(c => c.toUpperCase()).join(' / ')}` : ''}</div>
           <div className="mt-1 text-[10px] text-shark-muted">{t.eventCount} logs · 最大耗时 {t.maxDurationMs ?? '无'} ms · {t.lastSeen || ''}</div>
@@ -200,23 +345,22 @@ function TracePanel({ traces, edge, timeline, loading, onOpenTrace, onCloseTimel
       {timeline && <div className="absolute right-0 top-14 bottom-0 w-[640px] bg-slate-950 border-l border-purple-400/30 shadow-2xl flex flex-col z-20">
         <div className="p-4 border-b border-shark-border flex items-start gap-3"><div className="flex-1"><div className="text-sm font-semibold text-white">Trace 时间线</div><code className="text-xs text-purple-200 break-all">{timeline.traceId}</code><div className="text-xs text-shark-muted mt-1">{timeline.services.join(' → ')} · {timeline.eventCount} logs</div></div><button onClick={onCloseTimeline} className="text-shark-muted hover:text-white"><X size={18} /></button></div>
         <div className="flex-1 overflow-auto p-4 space-y-3">
-          {loading ? <Loader2 className="animate-spin text-purple-300" /> : timeline.events.map((e, i) => <div key={`${e.spanId}-${i}`} className={cn('border-l-2 pl-3 py-1', e.component ? 'border-cyan-400/60' : 'border-purple-500/50')}>
+          {loading && !timeline.events.length ? <Loader2 className="animate-spin text-purple-300" /> : timeline.events.map((e, i) => <div key={`${e.spanId}-${i}`} className={cn('border-l-2 pl-3 py-1', e.component ? 'border-cyan-400/60' : 'border-purple-500/50')}>
             <div className="text-[11px] text-shark-muted flex items-center gap-2 flex-wrap"><span className="text-purple-200">{e.timestamp}</span><span className="text-white">{e.serviceName}</span><span>{e.podName}</span>{e.component && <span className="inline-flex items-center gap-1 rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-200"><Database size={10} />{e.component.toUpperCase()}</span>}{e.durationMs !== undefined && e.durationMs !== null && <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-200"><Zap size={10} />{e.durationMs}ms</span>}</div>
             <pre className={cn('mt-1 text-xs font-mono whitespace-pre-wrap leading-5', e.logLevel === 'ERROR' ? 'text-red-300' : e.logLevel === 'WARN' ? 'text-yellow-300' : 'text-slate-300')}>{e.logLevel} | {e.javaModule} | {e.logMessage}</pre>
           </div>)}
+          {(timeline as TraceTimeline & { hasMore?: boolean }).hasMore && (
+            <button
+              onClick={() => onLoadMore(timeline.traceId, timeline.events.length)}
+              disabled={loading}
+              className="w-full text-xs py-2 rounded border border-purple-400/30 text-purple-200 hover:bg-purple-400/10 disabled:opacity-50"
+            >
+              {loading ? '加载中…' : `加载更多（已显示 ${timeline.events.length} / ${timeline.eventCount}）`}
+            </button>
+          )}
         </div>
       </div>}
     </aside>
   )
 }
 
-function layoutNodes(nodes: TopoNode[]): TopoNode[] {
-  const serviceNodes = nodes.filter(n => n.type === 'service')
-  const middlewareNodes = nodes.filter(n => n.type === 'middleware')
-  const W = 150; const H = 78; const GX = 28; const GY = 26; const COLS = 5
-  const layoutGroup = (group: TopoNode[], startY: number) => group.map((n, i) => ({ ...n, x: 10 + (i % COLS) * (W + GX), y: startY + Math.floor(i / COLS) * (H + GY) }))
-  const services = layoutGroup(serviceNodes, 10)
-  const serviceRows = Math.max(1, Math.ceil(serviceNodes.length / COLS))
-  const middlewares = layoutGroup(middlewareNodes, 10 + serviceRows * (H + GY) + 40)
-  return [...services, ...middlewares]
-}

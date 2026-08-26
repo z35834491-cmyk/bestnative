@@ -16,6 +16,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.deployment import Deployment
 from app.rag.ingest import ingest
+from app.services.argocd_client import deploy_app, rollback_app
+from app.services.platform_config import get_auto_rollback
 from app.services.prometheus import PrometheusClient
 
 logger = get_logger("agent.change")
@@ -68,7 +70,7 @@ class ChangeAgent:
         dep.ai_analysis = analysis
         dep.failure_reason = verify.get("reason", "健康检查未通过")
 
-        if settings.AUTO_ROLLBACK:
+        if get_auto_rollback():
             await self._argocd_rollback(dep)
             dep.status = "rolled_back"
             stages.append({"stage": "rollback", "status": "done", "detail": "自动回滚完成"})
@@ -80,6 +82,7 @@ class ChangeAgent:
 
         # ---- 6. 入库（沉淀到知识库）----
         await self._ingest_knowledge(dep, analysis)
+        await self._create_failure_incident(dep, analysis)
         await self.db.flush()
         return {"deployment_id": deployment_id, "status": dep.status, "analysis": analysis}
 
@@ -105,34 +108,10 @@ class ChangeAgent:
         return f"服务 {dep.service} 从 {dep.previous_version or 'N/A'} → {dep.version}，常规滚动更新"
 
     async def _argocd_deploy(self, dep: Deployment) -> bool:
-        """调用 argocd 更新镜像并 sync。无 argocd 配置时降级为模拟成功。"""
-        if not settings.ARGOCD_SERVER:
-            logger.info("argocd.skip", reason="no ARGOCD_SERVER, simulate", service=dep.service)
-            return True
-        cmd = ["argocd", "app", "set", dep.argocd_app,
-               "-p", f"image.tag={dep.version}",
-               "--server", settings.ARGOCD_SERVER, "--auth-token", settings.ARGOCD_TOKEN]
-        return await self._run(cmd) and await self._run(
-            ["argocd", "app", "sync", dep.argocd_app,
-             "--server", settings.ARGOCD_SERVER, "--auth-token", settings.ARGOCD_TOKEN])
+        return await deploy_app(dep)
 
     async def _argocd_rollback(self, dep: Deployment) -> bool:
-        if not settings.ARGOCD_SERVER:
-            logger.info("argocd.rollback.skip", service=dep.service)
-            return True
-        return await self._run(
-            ["argocd", "app", "rollback", dep.argocd_app,
-             "--server", settings.ARGOCD_SERVER, "--auth-token", settings.ARGOCD_TOKEN])
-
-    async def _run(self, cmd: list[str]) -> bool:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            _, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-            return proc.returncode == 0
-        except Exception as e:  # noqa: BLE001
-            logger.warning("argocd.cmd.failed", cmd=cmd[0], error=str(e))
-            return False
+        return await rollback_app(dep)
 
     async def _verify(self, dep: Deployment) -> dict:
         """健康检查 + 关键指标回归对比（错误率/延迟）。"""
@@ -180,5 +159,22 @@ class ChangeAgent:
         dep.failure_reason = reason
         dep.completed_at = datetime.now(timezone.utc)
         await self._save_stages(dep, stages)
+        await self._create_failure_incident(dep, reason)
         await self.db.flush()
         return {"deployment_id": str(dep.id), "status": "failed", "reason": reason}
+
+    async def _create_failure_incident(self, dep: Deployment, detail: str):
+        try:
+            from app.services.incident_service import upsert_incident
+            await upsert_incident(
+                self.db,
+                title=f"发布失败：{dep.service} {dep.version}",
+                severity="critical",
+                source="deployment",
+                affected_services=[dep.service],
+                detail={"deployment_id": str(dep.id), "reason": detail, "version": dep.version},
+                fingerprint=f"deploy:{dep.service}:{dep.version}",
+                actor="change_agent",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("change.incident.failed", error=str(e))

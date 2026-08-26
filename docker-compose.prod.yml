@@ -1,0 +1,44 @@
+# ============================================================
+# Shore — 生产环境 docker compose overlay
+# 用法: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ============================================================
+
+services:
+  api:
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: prod
+      AUTH_REQUIRED: "true"
+      DEBUG: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  frontend:
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3456/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  postgres:
+    restart: unless-stopped
+    ports: []  # 生产不暴露 DB 端口到 host
+
+  redis:
+    restart: unless-stopped
+    ports: []

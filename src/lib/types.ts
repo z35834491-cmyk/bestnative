@@ -28,7 +28,9 @@ export interface TopoNode {
   replicas?: number
   readyReplicas?: number
   version?: string
-  component?: 'mysql' | 'redis' | 'rabbitmq' | string
+  component?: 'mysql' | 'redis' | 'rabbitmq' | 'elasticsearch' | string
+  host?: string
+  port?: number
   traceCount?: number
   errorCount?: number
   lastSeen?: string
@@ -90,7 +92,7 @@ export interface TraceEvent {
   lineNum: string
   logMessage: string
   durationMs?: number | null
-  component?: 'mysql' | 'redis' | 'rabbitmq' | string | null
+  component?: 'mysql' | 'redis' | 'rabbitmq' | 'elasticsearch' | string | null
 }
 
 export interface TraceTimeline {
@@ -132,9 +134,20 @@ export interface AnalysisReport {
   confidence: string
   canAutoFix: boolean
   tokens: number
+  toolCalls?: Array<{ tool?: string; name?: string; input?: unknown; output?: unknown }>
+}
+
+export interface DeploymentBrief {
+  id: string
+  service: string
+  version: string
+  status: string
+  startedAt: string
+  commitMessage?: string
 }
 
 export interface IncidentDetail extends Incident {
   timeline: IncidentEvent[]
   reports: AnalysisReport[]
+  recentDeployments?: DeploymentBrief[]
 }

@@ -29,6 +29,12 @@ CONN_ENV_PATTERN = re.compile(
     r"(?:HOST|URL|ADDR|ENDPOINT|SERVER)", re.IGNORECASE
 )
 HOST_PORT_PATTERN = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?")
+HOSTNAME_PORT_PATTERN = re.compile(r"([\w.-]+):(\d{2,5})\b")
+JDBC_URL_PATTERN = re.compile(
+    r"jdbc:(?:mysql|mariadb|postgresql)://([^:/]+):?(\d+)?", re.IGNORECASE,
+)
+REDIS_URL_PATTERN = re.compile(r"redis(?:s)?://([^:/]+):?(\d+)?", re.IGNORECASE)
+ES_URL_PATTERN = re.compile(r"https?://([^:/]+):?(9200|9243)\b", re.IGNORECASE)
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
@@ -133,15 +139,39 @@ class KubernetesProvider(InfrastructureProvider):
         return result
 
     def _extract_bridge(self, svc: DiscoveredService, env: Any, result: DiscoveryResult):
-        """从环境变量中提取 host:port 形式的外部依赖。"""
-        if not env.value or not CONN_ENV_PATTERN.search(env.name or ""):
+        """从环境变量中提取 host:port 形式的外部依赖（IP、域名、JDBC/Redis URL）。"""
+        raw = (env.value or "").strip()
+        if not raw:
             return
-        m = HOST_PORT_PATTERN.search(env.value)
-        if not m:
+        name = env.name or ""
+
+        host, port = "", 0
+        for pattern, default_port in (
+            (JDBC_URL_PATTERN, 3306),
+            (REDIS_URL_PATTERN, 6379),
+            (ES_URL_PATTERN, 9200),
+        ):
+            m = pattern.search(raw)
+            if m:
+                host = m.group(1)
+                port = int(m.group(2)) if m.lastindex and m.group(2) else default_port
+                break
+
+        if not host and CONN_ENV_PATTERN.search(name):
+            m = HOST_PORT_PATTERN.search(raw)
+            if m:
+                host = m.group(1)
+                port = int(m.group(2)) if m.group(2) else 0
+            else:
+                m = HOSTNAME_PORT_PATTERN.search(raw)
+                if m:
+                    host, port = m.group(1), int(m.group(2))
+
+        if not host:
             return
-        host, port_s = m.group(1), m.group(2)
-        port = int(port_s) if port_s else 0
         mw_type = PORT_TO_MIDDLEWARE.get(port, "unknown")
+        if mw_type == "unknown" and port == 9200:
+            mw_type = "elasticsearch"
         result.middlewares.append(DiscoveredMiddleware(
             name=f"{svc.name}-dep-{host}", type=mw_type,
             host=host, port=port, discovered_from="env",

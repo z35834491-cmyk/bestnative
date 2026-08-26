@@ -17,12 +17,16 @@ class Deployment(TimestampMixin, Base):
     __tablename__ = "deployments"
 
     service: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
+    project: Mapped[str] = mapped_column(String(200), default="", index=True)
     version: Mapped[str] = mapped_column(String(100), nullable=False)
     previous_version: Mapped[str] = mapped_column(String(100), default="")
     docker_image: Mapped[str] = mapped_column(String(300), default="")
     argocd_app: Mapped[str] = mapped_column(String(150), default="")
-    # pending_approval → deploying → verifying → success / rolled_back / failed
-    status: Mapped[str] = mapped_column(String(30), default="deploying", index=True)
+    # success / failed / canceled / deploying / verifying / rolled_back
+    status: Mapped[str] = mapped_column(String(30), default="success", index=True)
+    build_status: Mapped[str] = mapped_column(String(20), default="")  # success | failed | canceled
+    build_duration_sec: Mapped[int] = mapped_column(Integer, default=0)
+    is_latest: Mapped[bool] = mapped_column(default=True, index=True)
     triggered_by: Mapped[str] = mapped_column(String(50), default="gitlab-ci")
     triggered_by_user: Mapped[str] = mapped_column(String(50), default="")
     commit_message: Mapped[str] = mapped_column(Text, default="")
@@ -34,4 +38,5 @@ class Deployment(TimestampMixin, Base):
     metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
     failure_reason: Mapped[str] = mapped_column(Text, default="")
     ai_analysis: Mapped[str] = mapped_column(Text, default="")
+    optimization_tips: Mapped[str] = mapped_column(Text, default="")
     extra: Mapped[dict] = mapped_column(JSONB, default=dict)

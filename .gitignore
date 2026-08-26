@@ -7,6 +7,7 @@ venv/
 
 # Env / secrets
 .env
+.env.secrets
 *.pem
 *.key
 
@@ -14,6 +15,7 @@ venv/
 node_modules/
 .next/
 out/
+tsconfig.tsbuildinfo
 
 # Misc
 .DS_Store

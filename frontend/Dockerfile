@@ -1,5 +1,5 @@
 # ============================================================
-# BestNative Frontend Dockerfile — Next.js 14 standalone
+# Shore Frontend Dockerfile — Next.js 14 standalone
 # ============================================================
 
 FROM node:20-alpine AS deps

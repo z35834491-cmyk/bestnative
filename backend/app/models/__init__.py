@@ -13,6 +13,8 @@ from app.models.deployment import Deployment
 from app.models.security import ScanSession, Asset, Vulnerability
 from app.models.knowledge import KnowledgeChunk
 from app.models.schedule import Schedule, PhoneAlert
+from app.models.monitor import MonitorTask
+from app.models.agent_run import AgentRun
 
 __all__ = [
     "User",
@@ -22,4 +24,6 @@ __all__ = [
     "ScanSession", "Asset", "Vulnerability",
     "KnowledgeChunk",
     "Schedule", "PhoneAlert",
+    "MonitorTask",
+    "AgentRun",
 ]

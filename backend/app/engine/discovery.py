@@ -95,4 +95,46 @@ class DiscoveryEngine:
             mw.discovered_from = dm.discovered_from
 
         await self.db.flush()
-        logger.info("discovery.persisted", cluster=result.cluster_name)
+        logger.info("discovery.persisted", cluster=result.cluster_name, bridges=len(result.bridges))
+
+        # ---- Service dependencies (bridges) ----
+        svc_map: dict[tuple[str, str], str] = {}
+        for ds in result.services:
+            svc = (await self.db.execute(
+                select(Service).where(
+                    Service.cluster_id == cluster.id,
+                    Service.namespace == ds.namespace,
+                    Service.name == ds.name,
+                )
+            )).scalar_one_or_none()
+            if svc:
+                svc_map[(ds.namespace, ds.name)] = str(svc.id)
+
+        mw_list = (await self.db.execute(select(Middleware))).scalars().all()
+        mw_map = {(m.host, m.port): str(m.id) for m in mw_list if m.host}
+
+        for bridge in result.bridges:
+            if len(bridge) < 4:
+                continue
+            src_name, tgt_host, tgt_port, detected_by = bridge[0], bridge[1], bridge[2], bridge[3]
+            src_id = None
+            for (ns, name), sid in svc_map.items():
+                if name == src_name:
+                    src_id = sid
+                    break
+            tgt_id = mw_map.get((tgt_host, int(tgt_port) if tgt_port else 0))
+            if not src_id or not tgt_id:
+                continue
+            dep = (await self.db.execute(
+                select(ServiceDependency).where(
+                    ServiceDependency.source_id == src_id,
+                    ServiceDependency.target_id == tgt_id,
+                )
+            )).scalar_one_or_none()
+            if dep is None:
+                dep = ServiceDependency(
+                    source_id=src_id, target_id=tgt_id,
+                    source_type="service", target_type="middleware",
+                    detected_by=detected_by or "bridge",
+                )
+                self.db.add(dep)
