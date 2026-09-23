@@ -1,6 +1,6 @@
 # ci-configs/ — 集中托管 CI/Dockerfile
 
-BestNative 统一管理的 CI/CD 配置。业务项目通过 GitLab CI `include` 引用此仓库中的配置，
+Shore 统一管理的 CI/CD 配置。业务项目通过 GitLab CI `include` 引用此仓库中的配置，
 不再各自维护 `.gitlab-ci.yml` 和 `Dockerfile`。
 
 ## 目录
@@ -21,11 +21,11 @@ ci-configs/
 ```
 业务项目 .gitlab-ci.yml:
   include:
-    - project: 'sre/bestnative'
+    - project: 'sre/shore'
       ref: main
       file: 'ci-configs/<project-name>/ci.yml'
 
-  → GitLab 在项目 repo 的 context 下加载 BestNative 的 CI 配置
+  → GitLab 在项目 repo 的 context 下加载 Shore 的 CI 配置
   → 运行环境仍是项目 repo（代码、Runner 不变）
   → 仅 CI 逻辑集中管理
 ```

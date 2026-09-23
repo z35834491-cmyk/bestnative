@@ -1,0 +1,29 @@
+# ============================================================
+# Shore — dev 环境 overlay
+# 用法: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# 配合 backend/.env.dev（从 .env.dev.example 复制）
+# ============================================================
+
+services:
+  api:
+    env_file:
+      - ./backend/.env.dev
+      - ./backend/.env.secrets
+    environment:
+      ENVIRONMENT: dev
+    ports:
+      - "8001:8000"
+
+  frontend:
+    environment:
+      NEXT_PUBLIC_ENV: dev
+    ports:
+      - "3457:3456"
+
+  postgres:
+    ports:
+      - "5434:5432"
+
+  redis:
+    ports:
+      - "6381:6379"

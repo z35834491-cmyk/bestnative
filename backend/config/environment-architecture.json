@@ -1,0 +1,77 @@
+{
+  "title": "Exchange 业务环境",
+  "tagline": "K8s 微服务承载业务，VM 跑中间件，GitLab CI + ArgoCD 负责 dev/test 发布",
+  "layers": [
+    {
+      "id": "access",
+      "name": "接入层",
+      "summary": "对外流量入口，鉴权、路由、限流",
+      "components": [
+        { "name": "exchange-gateway", "label": "API 网关", "namespace": "biz-system" },
+        { "name": "exchange-ws", "label": "WebSocket", "namespace": "biz-system" },
+        { "name": "exchange-web", "label": "Web 前端 BFF", "namespace": "biz-system" }
+      ]
+    },
+    {
+      "id": "business",
+      "name": "业务层",
+      "summary": "账户、订单、撮合、清算等核心域服务",
+      "components": [
+        { "name": "exchange-uc", "label": "用户中心", "namespace": "biz-system" },
+        { "name": "exchange-order", "label": "订单", "namespace": "biz-system" },
+        { "name": "exchange-match", "label": "撮合", "namespace": "biz-system" },
+        { "name": "exchange-market", "label": "行情", "namespace": "biz-system" },
+        { "name": "exchange-wallet", "label": "钱包/资产", "namespace": "biz-system" }
+      ]
+    },
+    {
+      "id": "platform",
+      "name": "平台 & 任务",
+      "summary": "定时任务、管理后台、内部工具",
+      "components": [
+        { "name": "exchange-xxl-job", "label": "XXL-JOB 调度", "namespace": "biz-system" },
+        { "name": "exchange-admin", "label": "管理后台", "namespace": "biz-system" }
+      ]
+    },
+    {
+      "id": "middleware",
+      "name": "中间件（VM / 集群外）",
+      "summary": "数据库、缓存、消息队列，多由 K8s 服务桥接发现",
+      "components": [
+        { "name": "mysql", "label": "MySQL", "type": "middleware" },
+        { "name": "redis", "label": "Redis", "type": "middleware" },
+        { "name": "rabbitmq", "label": "RabbitMQ", "type": "middleware" }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "name": "REST 请求",
+      "steps": ["客户端", "exchange-gateway", "业务服务", "MySQL / Redis"]
+    },
+    {
+      "name": "实时推送",
+      "steps": ["客户端", "exchange-ws", "exchange-market", "Redis Pub/Sub"]
+    },
+    {
+      "name": "下单撮合",
+      "steps": ["exchange-uc", "exchange-order", "exchange-match", "RabbitMQ", "清算服务"]
+    },
+    {
+      "name": "dev/test 发布",
+      "steps": ["GitLab push", "CI 构建镜像", "更新 Helm", "ArgoCD Sync", "biz-system Pod"]
+    }
+  ],
+  "infra": [
+    { "name": "Kubernetes", "desc": "运行业务 Deployment，Shore 自动发现拓扑" },
+    { "name": "GitLab CI", "desc": "构建 + 推镜像，Shore 只读扫描 Pipeline" },
+    { "name": "ArgoCD", "desc": "dev/test 环境部署与回滚" },
+    { "name": "Prometheus", "desc": "指标与 Alertmanager 告警" },
+    { "name": "Elasticsearch", "desc": "日志检索与 Trace（拓扑页使用）" },
+    { "name": "Shore", "desc": "本控制台：事件、发布、日志监控、巡检" }
+  ],
+  "namespaces": [
+    { "name": "biz-system", "desc": "Exchange 核心业务 Pod" },
+    { "name": "default", "desc": "默认 / 辅助组件" }
+  ]
+}

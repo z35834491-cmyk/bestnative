@@ -1,7 +1,7 @@
-# CI/CD 迁移清单 — 业务项目 CI → BestNative 集中管理
+# CI/CD 迁移清单 — 业务项目 CI → Shore 集中管理
 
 > 目标：业务项目删掉 `.gitlab-ci.yml` 和 `Dockerfile`，仅保留一行 `include` 引用。
-> 实际 CI 逻辑全部托管在 `bestnative/ci-configs/` 下，由运维团队统一维护和优化。
+> 实际 CI 逻辑全部托管在 `shore/ci-configs/` 下，由运维团队统一维护和优化。
 
 ---
 
@@ -10,7 +10,7 @@
 ```
                          ┌─────────────────────┐
 dev push code ──────────→│  GitLab CI (thin)    │
-                         │  include: bestnative │
+                         │  include: shore │
                          └────────┬────────────┘
                                   │ 加载 ci-configs/<project>/ci.yml
                                   ▼
@@ -25,7 +25,7 @@ dev push code ──────────→│  GitLab CI (thin)    │
                                   │
                          ┌────────▼────────────┐
                          │ ArgoCD sync + verify │
-                         │ BestNative webhook   │
+                         │ Shore webhook   │
                          └──────────────────────┘
 ```
 
@@ -35,7 +35,7 @@ dev push code ──────────→│  GitLab CI (thin)    │
 
 | 权限项 | 说明 | 配置位置 |
 |:-------|:-----|:---------|
-| BestNative repo 读取权限 | 业务项目的 CI runner 需要能通过 `include: project` 引用 BestNative 仓库中的 CI 文件 | GitLab → BestNative 项目 → Settings → CI/CD → Token Access → 允许 `sre/*` group 访问 |
+| shore 仓库读取权限 | 业务项目的 CI runner 需要能通过 `include: project` 引用本仓库 CI 文件 | GitLab → `sre/shore` → Settings → CI/CD → Token Access → 允许 `sre/*` group 访问 |
 | `GITLAB_API_TOKEN` | CI 中下载 maven settings 文件和 clone Helm 仓库用的 API Token | GitLab → Settings → Access Tokens → 创建 `api` + `read_repository` scope 的 token → 设为 Group CI Variable |
 | `GITLAB_URL` | GitLab 实例地址 | 设为 Group CI Variable |
 | `SLACK_URL` | Slack webhook URL | 已有，无需变更 |
@@ -65,16 +65,16 @@ dev push code ──────────→│  GitLab CI (thin)    │
 | `ARGOCD_TEST_URL` | test 环境 ArgoCD 地址 | 已有 |
 | `ARGOCD_TEST_TOKEN` | test 环境 ArgoCD Auth Token | 已有 |
 
-> 生产 main 分支不走 ArgoCD CI 自动部署（现有流程：main 仅 update-helm + push OCI，手动触发部署或通过 BestNative webhook）。与现有行为一致。
+> 生产 main 分支不走 ArgoCD CI 自动部署（现有流程：main 仅 update-helm + push OCI，手动触发部署或通过 Shore webhook）。与现有行为一致。
 
 ---
 
 ## 第四步：逐个业务项目迁移
 
-### 4.1 复制配置到 BestNative
+### 4.1 复制配置到 Shore
 
 ```bash
-cd bestnative/ci-configs/
+cd shore/ci-configs/
 
 # 为每个项目创建目录（以 exchange-xxl-job 为例）
 mkdir -p exchange-xxl-job
@@ -94,7 +94,7 @@ cp ~/Desktop/cicd/exchange-xxl-job/Dockerfile exchange-xxl-job/
 # ci-configs/exchange-xxl-job/ci.yml
 ---
 include:
-  - project: 'sre/bestnative'
+  - project: 'sre/shore'
     ref: main
     file: 'ci-configs/templates/ci-common.yml'
 
@@ -250,7 +250,7 @@ exchange-xxl-job/
 
 ```yaml
 include:
-  - project: 'sre/bestnative'
+  - project: 'sre/shore'
     ref: main
     file: 'ci-configs/exchange-xxl-job/ci.yml'
 ```
@@ -259,7 +259,7 @@ include:
 
 | 注意点 | 说明 |
 |:-------|:-----|
-| Dockerfile 位置 | CI 的 `build` job 在项目 repo 根目录执行 `docker build`，Dockerfile 引用的 `COPY ./xxl-job-admin/target/*.jar` 等路径必须与项目 repo 结构一致。项目 repo 不需要保留 Dockerfile（已在 BestNative 中），但 COPY 的源路径（jar/node_modules）仍是项目 repo 内的产物 |
+| Dockerfile 位置 | CI 的 `build` job 在项目 repo 根目录执行 `docker build`，Dockerfile 引用的 `COPY ./xxl-job-admin/target/*.jar` 等路径必须与项目 repo 结构一致。项目 repo 不需要保留 Dockerfile（已在 Shore 中），但 COPY 的源路径（jar/node_modules）仍是项目 repo 内的产物 |
 | Maven settings 文件 | 仍存在业务项目的 GitLab repo 中（`maven-setting-dev.xml` 等），下载逻辑不变 |
 | Helm 仓库 | 仍在 `sre/cicd` 仓库中，update-helm 逻辑不变 |
 | Slack 通知 | 逻辑不变，模板收拢到 `ci-common.yml` |
@@ -272,7 +272,7 @@ include:
 ### 5.1 预先检查
 
 ```bash
-# 确认 BestNative ci-configs 目录完整
+# 确认 Shore ci-configs 目录完整
 ls ci-configs/templates/ci-common.yml     # 共享模板
 ls ci-configs/<project>/ci.yml            # 项目 CI
 ls ci-configs/<project>/Dockerfile        # 项目 Dockerfile
@@ -310,7 +310,7 @@ git revert <迁移commit>
 | 多模块 Maven 并行构建 | 区分 api/biz/db 模块并行编译 → 提速 |
 | CI 缓存策略统一 | cache key、Maven/NPM 缓存路径标准化 |
 | 非 Maven 项目模板 | Node/pnpm、Go、Python 项目模板 |
-| BestNative 自动优化建议 | AI 分析构建历史，推荐 JVM 参数/镜像大小优化 |
+| 构建历史分析（规划中） | 根据历史构建耗时，推荐 JVM 参数 / 镜像优化 |
 
 ---
 
@@ -333,4 +333,4 @@ git revert <迁移commit>
 | `ARGOCD_TEST_TOKEN` | Group CI Var | ✅ 已有 |
 | `ECR_PROD_ADDR` | Group CI Var | ✅ 已有 |
 | `PROJECT_ID` | Project CI Var | ✅ 每项目独立 |
-| BestNative Repo Read | GitLab Token Access | **需配置** |
+| Shore Repo Read | GitLab Token Access | **需配置** |

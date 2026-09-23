@@ -1,5 +1,5 @@
 # ============================================================
-# BestNative Backend — requirements-ml.txt
+# Shore Backend — requirements-ml.txt
 # 本地 RAG（embedding + rerank）依赖，含 torch（体积大）
 # 安装：pip install -r requirements-ml.txt
 # 未安装时 RAG 自动降级，核心功能不受影响

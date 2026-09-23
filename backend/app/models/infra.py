@@ -19,6 +19,7 @@ class Cluster(TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     provider: Mapped[str] = mapped_column(String(30))  # kubernetes / aws_ec2 / ssh_vm / aliyun
+    kubeconfig: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     node_count: Mapped[int] = mapped_column(Integer, default=0)
     health: Mapped[str] = mapped_column(String(20), default="unknown")
     extra: Mapped[dict] = mapped_column(JSONB, default=dict)

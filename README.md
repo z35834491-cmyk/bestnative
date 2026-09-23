@@ -1,322 +1,274 @@
-# BestNative — AI-Native 智能运维平台
-
 <p align="center">
-  <img src="https://img.shields.io/badge/status-active-success" alt="Status">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <strong>Shore</strong>
 </p>
 
-> 将 AI Agent 体系深度融合进运维全生命周期 — 从被动响应到主动预防，从人工排查到智能诊断，从经验驱动到数据驱动。
+<p align="center">
+  <sub>AI SRE 控制面：告警诊断 · 发布观测 · 巡检编排 · 知识归档 · Copilot</sub>
+</p>
+
+<p align="center">
+  <a href="docs/ARCHITECTURE.md">架构</a> ·
+  <a href="docs/CONFIG.md">配置</a> ·
+  <a href="docs/INTEGRATION.md">集成</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/stage-v0.1.0-blue" alt="stage">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/agents-10-purple" alt="agents">
+  <img src="https://img.shields.io/badge/pages-12-orange" alt="pages">
+  <img src="https://img.shields.io/badge/remediate-plan--only-yellow" alt="remediate">
+</p>
+
+> **Shore 是 AIOps 控制面。** Web 控制台 + 10 Agent + RAG 知识库 + APScheduler 定时任务。只读接入 Prometheus / Elasticsearch / Alertmanager / GitLab / Kubernetes，在上面跑告警诊断、发布观测、巡检、Copilot 与知识归档。修复与集群变更默认 **plan-only**，显式开关 + operator 权限后才执行。
+
+产品说明：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
-## 目录
+## 这算什么
 
-- [平台理念](#平台理念)
-- [核心能力](#核心能力)
-- [AI Agent 体系](#ai-agent-体系)
-- [知识引擎 (RAG)](#知识引擎-rag)
-- [可观测性](#可观测性)
-- [自动化运维](#自动化运维)
-- [多环境管理](#多环境管理)
-- [安全合规](#安全合规)
-- [快速开始](#快速开始)
-- [架构](#架构)
+**一句话：** 告警、发布、日志、拓扑、历史案例进同一个控制面，10 个 Agent 分工处理，Coordinator 串流水线。
 
----
-
-## 平台理念
-
-传统运维的瓶颈不在工具不够多，而在**决策链路太长**：告警响了 → 人看 → 人查日志 → 人查指标 → 人翻历史 → 人判断 → 人执行。每一步都是分钟级的上下文切换。
-
-BestNative 的核心思路是把这条链路上的每一步都交给对应的 AI Agent，人只做最终确认。
-
+```text
+Alertmanager → 事件入库 → DiagnosisAgent(RAG + ReAct) → AnalysisReport
+  → [can_auto_fix] RemediateAgent Runbook → 关单 → KnowledgeAgent → RAG
+  → 下次同类告警先命中历史
 ```
-传统模式: 告警 → 👤查 → 👤判断 → 👤执行
-BestNative: 告警 → 🤖监控Agent → 🤖诊断Agent → 🤖修复建议 → 👤确认 → 🤖执行Agent
-```
 
-三个关键转变：
-
-1. **从被动到主动** — 不等告警才响应，Agent 7×24 自驱巡检，异常在影响用户前已被发现
-2. **从孤岛到协同** — 日志、指标、链路、事件、知识库不再是独立系统，Agent 在统一的上下文中跨源推理
-3. **从遗忘到积累** — 每次故障的处理过程自动沉淀为知识，下次同类事件秒级匹配，组织经验不随人员流动而丢失
-
----
-
-## 核心能力
-
-| 领域 | 能力 | 说明 |
+| 模块 | 路由 | 能力 |
 |------|------|------|
-| **全局总览** | 实时资源拓扑 + 健康染色 | 多集群服务/节点/中间件统一视图，异常一眼定位 |
-| **智能告警** | 聚合 → 去重 → 丰富化 → 路由 | 告警风暴变结构化事件，自动关联影响面 |
-| **根因诊断** | 多源交叉推理 | Agent 自主查询日志/指标/链路/变更记录，给出根因假设和置信度 |
-| **自动修复** | 已知故障模式 Runbook 执行 | 匹配历史案例，自动执行修复动作（需人工确认），全链路审计 |
-| **服务拓扑** | 基于真实链路的调用图 | 从分布式日志中还原服务间调用关系，自动识别中间件依赖 |
-| **知识管理** | 故障归档 + 智能检索 | 每次事件自动沉淀，向量检索 + 全文检索双路召回 |
-| **变更管理** | 发布风险评估 + 自动验证 | 分析变更 diff 与历史故障的关联，部署后自动健康检查 |
-| **成本优化** | 资源画像 + 闲置识别 | 跨环境成本聚合，自动发现可降配/可释放资源 |
-| **安全扫描** | 定时全平台漏洞检测 | 资产自动发现 + 漏洞模板匹配，合规报告自动生成 |
-
----
-
-## AI Agent 体系
-
-### 设计理念
-
-不是一个大模型包揽一切，而是**多个专业 Agent 各司其职**，类似运维团队的分工：有人盯监控，有人排查故障，有人执行变更，有人做复盘。
-
-每个 Agent 拥有受限的工具集和领域知识。Agent 之间通过统一的上下文总线传递信息——诊断 Agent 的结论直接喂给修复 Agent，不需要人工中转。
-
-### Agent 分工
-
-| Agent | 职责 | 运行模式 |
-|-------|------|----------|
-| **监控 Agent** | 多维度巡检，异常检测，告警聚合 | 事件驱动 + 定时巡检 |
-| **诊断 Agent** | 多步推理排查，根因定位，影响面评估 | 按需触发（告警/手动） |
-| **修复 Agent** | 已知故障自动修复，回滚操作 | 诊断结论触发（需确认） |
-| **安全 Agent** | 漏洞扫描，基线检查，合规审计 | 定时 + 手动 |
-| **变更 Agent** | 发布前风险评估，部署后验证，失败回滚 | CI/CD 事件触发 |
-| **成本 Agent** | 资源使用分析，降本建议，ROI 模型 | 定时日报/周报 |
-| **知识 Agent** | 故障归档，案例匹配，复盘报告生成 | 事件解决后触发 |
-| **架构 Agent** | 容量预测，瓶颈分析，高可用评估 | 周报触发 |
-| **助手 Agent** | 自然语言交互，日报/周报，主动提醒 | 用户 @提及 |
-| **调度 Agent** | 多 Agent 协同编排，任务优先级，值班轮转 | 常驻 |
-
-### 工具分层
-
-不是一次性把所有工具描述塞给模型。工具按使用场景分 4 层，Agent 根据当前推理阶段按需加载：
-
-```
-▼ 感知层 — 查日志 / 查指标 / 查拓扑 / 查事件        （永远可用）
-▼ 分析层 — 链路追踪 / 依赖分析 / 性能剖析 / 历史匹配  （诊断时加载）
-▼ 决策层 — 风险评估 / 容量预测 / 影响面计算          （决策时加载）
-▼ 执行层 — 重启服务 / 回滚部署 / 漏洞扫描 / 生成规则  （确认后加载）
-```
-
-这种设计让每次推理的上下文保持在核心信息范围内，避免了"把所有工具一股脑塞进去"导致的注意力分散和成本浪费。
-
----
-
-## 知识引擎 (RAG)
-
-### 为什么需要 RAG
-
-大模型的训练数据是通用的，它不知道你的具体系统长什么样。当 Agent 诊断一个故障时，它需要的不是"MySQL 连接超时怎么处理"这种通用知识，而是"上周三 exchange-order 服务也出现过同样的连接池耗尽，当时的根因是 Redis 主从切换导致的所有连接同时重建"——这是只有你的系统才有的知识。
-
-### 检索流程
-
-```
-用户查询 / Agent 提问
-      │
-      ▼
-  语义向量化（本地推理，零外部 API 成本）
-      │
-      ├──→ 向量检索（语义相似度，召回 70%）
-      │
-      └──→ 关键词检索（精确匹配，召回 30%）
-      │
-      ▼
-  融合排序（加权合并两路结果）
-      │
-      ▼
-  精排模型重打分（Cross-Encoder，深度语义对齐）
-      │
-      ▼
-  Top-3 结果注入 Agent 上下文
-```
-
-### 知识的生命周期
-
-```
-故障发生 → Agent 诊断排查 → 解决 → 自动归档
-                                         │
-                    ┌────────────────────┘
-                    ▼
-              结构化为知识条目
-                    │
-                    ├── 原始日志片段
-                    ├── 指标快照
-                    ├── 根因摘要
-                    ├── 修复步骤
-                    └── 关联服务/中间件标签
-                    │
-                    ▼
-              向量化存入知识库
-                    │
-                    ▼
-              下次同类事件 → 毫秒级命中 → 直接给出处理方案
-```
-
-### 飞轮效应
-
-系统的知识不是静态的。每次故障处理都在喂养知识库，知识库越丰富，Agent 诊断越准，处理越快。从"每次排查 30 分钟"到"第三次同类事件 30 秒定位"——这是运维 AI 化的核心价值。
-
----
-
-## 可观测性
-
-### 统一数据面
-
-不引入新的采集管道。平台作为**只读消费者**接入现有的可观测性基础设施：
-
-```
-现有的 Prometheus（指标）
-现有的 Elasticsearch（日志）
-现有的日志埋点 traceId（链路）
-        │
-        ▼
-   BestNative 统一查询层
-        │
-        ├── 监控 Agent：PromQL 动态生成，多指标交叉异常检测
-        ├── 诊断 Agent：日志 + 指标 + 链路三源交叉推理
-        └── 拓扑引擎：从日志 traceId 还原真实调用拓扑
-```
-
-### 服务拓扑
-
-传统拓扑依赖 K8s Service/Deployment 的静态声明——它画的是"配置上应该怎样调用"，不是"实际在怎样调用"。
-
-BestNative 从分布式日志中提取 `traceId`，根据同一链路上服务出现的顺序还原**真实的运行时调用关系**。同时自动识别日志中出现的中间件（数据库、缓存、消息队列），形成完整的：
-
-```
-网关 → 业务服务A → 缓存(Redis) → 业务服务B → 数据库(MySQL)
-                      │
-                      └── 消息队列(RabbitMQ) → 业务服务C
-```
-
-每条边上带有统计信息：调用次数、错误率、平均延迟、P95 延迟——这些数据全部来自生产日志，不需要额外接入 APM 或修改代码。
-
----
-
-## 自动化运维
-
-### 从告警到修复的完整链路
-
-```
-1. 监控 Agent 检测异常
-   └── 指标突变 / 日志错误率飙升 / 资源耗尽
-
-2. 告警聚合 & 去重
-   └── 同一个根因引发的多条告警合并为一个事件
-
-3. 事件丰富化
-   └── 自动关联受影响的服务、最近的变更、历史上的类似事件
-
-4. 诊断 Agent 启动多步排查
-   └── 查日志 → 查指标 → 追踪链路 → 查变更记录 → 查知识库
-   └── 输出：根因假设 + 置信度 + 影响面 + 建议操作
-
-5. 修复 Agent 执行（or 建议人工介入）
-   └── 已知模式 → 匹配 Runbook → 自动执行 → 验证效果
-   └── 未知模式 → 给出分析报告 → 等待人工决策
-
-6. 故障归档
-   └── 完整时间线 + 根因 + 修复步骤 → 自动入库
-```
-
-### 发布管理
-
-```
-代码合并 → 变更 Agent 分析 diff
-         → 评估风险（改了哪些服务？历史上改这些地方出过事吗？）
-         → 生成发布策略（全量 / 灰度 / 金丝雀）
-         → 执行部署
-         → 部署后验证（错误率、延迟、资源使用是否正常？）
-         → 异常？→ 自动回滚 → 通知原因
-         → 正常？→ 通知完成 → 归档
-```
-
----
-
-## 多环境管理
-
-一套代码，按环境部署。每个环境（测试/生产/灾备）独立运行一个 BestNative 实例，环境差异由部署时注入的配置决定，不通过代码分支管理。
-
-支持的接入方式：
-- **容器平台** — 通过标准 API 发现 Service / Deployment / Pod 及其实时状态
-- **云主机** — 通过云 API 发现实例、安全组、标签
-- **裸金属 / 私有 VM** — 通过 SSH 探测进程、端口、中间件
-- **混合环境** — 容器服务调用 VM 上的数据库？自动建立跨环境拓扑桥接
-
----
-
-## 安全合规
-
-安全扫描引擎定时检测平台自身的安全性，不做对外攻击平台。
-
-- **资产发现** — 自动识别所有暴露的服务域名、IP、端口
-- **漏洞扫描** — 基于漏洞模板库的自动化检测
-- **基线检查** — 配置合规检查，偏离基线自动告警
-- **合规报告** — 自动生成审计报告
-- **调度策略** — 全平台定时扫描（每日凌晨）+ 手动按需扫描
-
----
-
-## 快速开始
-
-```bash
-git clone https://github.com/sharkchenshun/bestnative.git
-cd bestnative
-
-# 配置环境变量
-cp backend/.env.example backend/.env
-# 编辑 backend/.env 填入实际的数据库、LLM API Key、集群连接信息
-
-# 启动全栈
-docker compose up -d --build
-
-# 访问
-# 前端 → http://localhost:3456
-# API  → http://localhost:3456/api/health
-```
-
-完整环境变量说明见 `backend/app/core/config.py`。
+| 全局总览 | `/` | 业务架构蓝图、KPI、集成状态 |
+| 服务拓扑 | `/topology` | K8s 拓扑 + ES trace 调用链 |
+| 事件中心 | `/incidents` | Alertmanager 接入、LLM 诊断、处理记录 |
+| Pod 管理 | `/pods` | 命名空间 Pod、日志 |
+| 发布管理 | `/deployments` | CI 扫描、构建分析、回滚 |
+| 日志监控 | `/logs` | 关键字匹配、Slack 告警 |
+| 监控巡检 | `/monitoring` | 定时巡检、Prometheus 异常 |
+| 成本分析 | `/cost` | 资源成本、缩容建议 |
+| 值班排班 | `/schedules` | 排班、近期值班 |
+| 运维助手 | `/copilot` | ReAct 对话 |
+| 知识库 | `/knowledge` | RAG 混合检索 |
+| 安全合规 | `/security` | nmap / nuclei 扫描 |
+| 平台设置 | `/settings` | 集成检查、维护窗口 |
 
 ---
 
 ## 架构
 
+```mermaid
+flowchart TB
+    subgraph External["外部（只读接入）"]
+        AM[Alertmanager]
+        Prom[Prometheus]
+        ES[Elasticsearch]
+        GL[GitLab CI]
+        K8s[Kubernetes]
+        Argo[ArgoCD]
+    end
+
+    subgraph UI["Web 控制台"]
+        Pages["12 页面 · JWT"]
+    end
+
+    subgraph API["FastAPI"]
+        REST[REST API]
+        Sched[APScheduler]
+        BG[BackgroundTasks]
+    end
+
+    subgraph Agents["10 Agent"]
+        direction TB
+        A1[诊断 · 修复 · 知识]
+        A2[监控 · 成本 · 架构]
+        A3[Copilot · 变更 · 安全]
+        A4[Coordinator]
+    end
+
+    subgraph Cognition["认知层"]
+        ReAct[ReAct 执行器]
+        Tools["工具 Tier 0–3"]
+        RAG["RAG · pgvector"]
+    end
+
+    subgraph Data["数据"]
+        PG[(PostgreSQL)]
+        Redis[(Redis)]
+    end
+
+    AM --> REST
+    GL --> REST
+    Prom & ES & K8s & Argo --> Tools
+
+    Pages --> REST
+    REST --> Agents
+    Sched --> Agents
+    BG --> Agents
+
+    A1 & A3 --> ReAct
+    ReAct --> Tools
+    A1 --> RAG
+
+    Agents --> PG
+    REST --> Redis
+    RAG --> PG
 ```
-┌─────────────────────────────────────────────────┐
-│                    前端控制台                      │
-│          全局总览 · 拓扑 · 事件 · 知识库            │
-├─────────────────────────────────────────────────┤
-│                    API 网关                       │
-│         认证 · 路由 · 限流 · 同源代理              │
-├──────┬──────┬──────┬──────┬──────┬──────────────┤
-│ 监控  │ 诊断  │ 修复  │ 变更  │ 安全  │     ...      │
-│ Agent │ Agent │ Agent │ Agent │ Agent │  (10 Agent) │
-├──────┴──────┴──────┴──────┴──────┴──────────────┤
-│              Agent 执行引擎                       │
-│       推理循环 · 工具调度 · 上下文管理              │
-├─────────────────────────────────────────────────┤
-│           知识引擎 (RAG)                          │
-│      向量检索 + 关键词检索 + 精排重打分             │
-├─────────────────────────────────────────────────┤
-│              统一数据层                            │
-│   业务数据 / 向量 / 全文索引  │  缓存 / 消息总线    │
-├─────────────────────────────────────────────────┤
-│             外部系统（只读接入）                     │
-│      监控系统  │  日志平台  │  容器平台  │  云 API    │
-└─────────────────────────────────────────────────┘
+
+**边界**
+
+```text
+基础设施层   Prometheus · ES · Alertmanager · GitLab · K8s · ArgoCD
+Shore 平台   本仓库 — Web UI · Agent · RAG · 事件/拓扑/知识库/审计
+Hermes Ops Kit（可选）  env-map · 巡检 JSON · L0 Runbook 合同 → Shore 只读消费
 ```
 
 ---
 
-## 设计原则
+## Agent
 
-**复用优于新建。** 不引入新的基础设施组件。监控、日志、链路全部复用现有系统，平台只做智能分析层。
+| Agent | 触发 | 输出 |
+|-------|------|------|
+| **诊断** | Alertmanager / 手动 / Coordinator | RAG → ReAct(Prom/ES/K8s) → `AnalysisReport` |
+| **修复** | 诊断后 `can_auto_fix` | Runbook：重启 / 回滚 / 扩容 / 人工 |
+| **知识** | 事件 `resolved` | LLM 整理 → 切块 embedding → pgvector |
+| **监控** | 每 15min | Service 健康 + Prometheus 5xx Top10 |
+| **成本** | 每天 06:00 | 月度成本估算 + 缩容建议 |
+| **架构** | 每周一 09:00 | 依赖热点、单副本风险 |
+| **Copilot** | 用户对话 | ReAct ≤6 轮，查指标/日志/事件/知识库 |
+| **变更** | CI webhook（接管模式） | 评估 → 部署 → Prom 验证 → 回滚 → 入库 |
+| **安全** | 每天 03:00 / 手动 | subfinder → httpx → nmap → nuclei + LLM 报告 |
+| **Coordinator** | `POST /api/ops/coordinator/run` | `incident_response` · `daily_ops` · `on_call_check` |
 
-**本地推理优先。** 向量化、精排等高频操作全部本地完成，不依赖外部 API。只在需要复杂推理时调用大模型。
+---
 
-**知识即壁垒。** 系统越用越聪明。每次故障都在增强下一次的应对能力。这是平台的核心护城河。
+## 定时任务
 
-**安全内建。** 自动修复需人工确认。敏感信息自动脱敏。所有操作全链路审计。
+| 间隔 | 任务 |
+|------|------|
+| 5 min | K8s Discovery → 拓扑入库 |
+| 2 min | GitLab CI 只读扫描 → Deployment 入库 |
+| 15 min | Monitor Agent 巡检 |
+| 06:00 daily | Cost Agent 成本分析 |
+| 03:00 daily | Security Agent 全平台扫描 |
+| Mon 09:00 | Architecture Agent 架构评审 |
+| 持续 | 日志关键字监控 → Slack（可静默） |
 
-**简单至上。** 单仓库、单配置文件、一条命令启动。不做微服务拆分，不做不必要的抽象层。
+---
+
+## 主链路
+
+### 告警闭环
+
+```mermaid
+flowchart TD
+  A[Alertmanager Webhook] --> B[事件入库 · fingerprint 去重]
+  B --> C{维护窗口?}
+  C -->|是| X[丢弃]
+  C -->|否| D[DiagnosisAgent]
+  D --> E[RAG Top-3 相似案例]
+  E --> F[ReAct · Prom / ES / K8s]
+  F --> G[AnalysisReport]
+  G --> H{can_auto_fix?}
+  H -->|是| I[RemediateAgent Runbook]
+  H -->|否| J[人工处理]
+  I --> J
+  J --> K[resolved]
+  K --> L[KnowledgeAgent → RAG]
+```
+
+状态机：`firing → acknowledged → analyzing → analyzed → resolved`
+
+### 发布观测
+
+```mermaid
+flowchart LR
+  A[GitLab CI 轮询] --> B[Deployment 入库]
+  B --> C{失败?}
+  C -->|否| D[完成]
+  C -->|是| E[LLM 分类 + 摘要]
+  E --> F{AUTO_ROLLBACK?}
+  F -->|是| G[ArgoCD 回滚]
+  F -->|否| H[Slack]
+  G --> H
+```
+
+默认 `BUILD_OBSERVE_MODE=true`（只观测）。接管模式走 ChangeAgent 六阶段，Prom 验错误率 + P95。
+
+### Copilot
+
+```mermaid
+flowchart LR
+  U[用户] --> C[CopilotAgent]
+  C --> R[ReAct]
+  R --> T1[query_prometheus]
+  R --> T2[search_es_logs]
+  R --> T3[get_k8s_topology · search_knowledge]
+  T1 & T2 & T3 --> A[回复]
+```
+
+---
+
+## 推理层
+
+```text
+┌─────────────────────────────────────────┐
+│  DiagnosisAgent · CopilotAgent          │
+├─────────────────────────────────────────┤
+│  ReAct   LLM → tool_call → 观察 → 推理   │  ≤8 轮 · 工具返回 ≤2000 字
+├─────────────────────────────────────────┤
+│  Tools   Tier 0 指标/日志/拓扑            │
+│          Tier 1 事件/知识库               │
+│          Tier 3 restart_pod（需开关）     │
+├─────────────────────────────────────────┤
+│  RAG     向量 0.7 + 全文 0.3 → rerank 3  │  90 天窗口 · 服务标签过滤
+├─────────────────────────────────────────┤
+│  Output  root_cause · evidence · confidence · can_auto_fix
+└─────────────────────────────────────────┘
+```
+
+ReAct 第 4 轮起压缩历史：保留 system + 首条 user + 最近 4 条。
+
+→ [ARCHITECTURE.md §6–§7](docs/ARCHITECTURE.md)
+
+---
+
+## 提供 / 不提供
+
+| 提供 | 不提供 |
+|------|--------|
+| 12 页 Web 控制台 + JWT | 替代 Prometheus / ES / Alertmanager |
+| 10 Agent + Coordinator 三条流水线 | 跨环境 UI 切换 |
+| Alertmanager webhook + 自动诊断 | 默认自动执行修复 |
+| ReAct 工具调用 + RAG 混合检索 | 默认接管 CI 部署 |
+| K8s 发现 + 拓扑 + trace | 日志监控自动建 Incident |
+| GitLab CI 扫描 + 构建 LLM 分析 | |
+| 日志监控 + Slack 脱敏告警 | |
+| 安全扫描链 + 维护窗口 | |
+| AgentRun 审计 | |
+
+---
+
+## Hermes Ops Kit
+
+[Hermes Ops Kit](https://github.com/z35834491-cmyk/hermes-ops-kit) 提供 env-map、巡检 JSON、L0 Runbook 合同（plan-only）。Shore 是 Web/API 控制面，可读其合同形状。
+
+```text
+Ops Kit 合同  →  Shore 只读  →  Agent 推理  →  人确认  →  执行
+```
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Agent 流程、ReAct、RAG、状态机、ER 图、部署拓扑 |
+| [CONFIG.md](docs/CONFIG.md) | 环境变量 |
+| [INTEGRATION.md](docs/INTEGRATION.md) | 外部系统接入 |
+| [CICD_MIGRATION.md](docs/CICD_MIGRATION.md) | CI 迁移 |
 
 ---
 
 ## License
 
-MIT © sharkchenshun
+MIT © [sharkchenshun](https://github.com/sharkchenshun/shore)
